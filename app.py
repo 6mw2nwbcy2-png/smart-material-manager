@@ -226,21 +226,21 @@ def calc_destination(tile_type, application_type):
     return "현장"
 
 def register_korean_font():
-    candidates = [
-        r"C:\Windows\Fonts\malgun.ttf",
-        r"C:\Windows\Fonts\malgunsl.ttf",
-        "/usr/share/fonts/truetype/nanum/NanumGothic.ttf",
-        "/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc",
-    ]
-    for p in candidates:
-        if os.path.exists(p):
-            try:
-                pdfmetrics.registerFont(TTFont("Korean", p))
-                return "Korean"
-            except Exception:
-                pass
-    return "Helvetica"
+    from reportlab.pdfbase.cidfonts import UnicodeCIDFont
 
+    try:
+        pdfmetrics.registerFont(
+            UnicodeCIDFont("HYSMyeongJoStd-Medium")
+        )
+        return "HYSMyeongJoStd-Medium"
+    except Exception:
+        try:
+            pdfmetrics.registerFont(
+                UnicodeCIDFont("HYGothic-Medium")
+            )
+            return "HYGothic-Medium"
+        except Exception:
+            return "Helvetica"
 PDF_FONT = register_korean_font()
 
 def make_order_pdf(order_row, lines_df):
