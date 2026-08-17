@@ -398,10 +398,16 @@ else:
 
 st.sidebar.caption("v1.1 · CLOUD")
 
-st.title("🏗️ Smart Material Manager")
-st.caption(f"{SITE_NAME} · 철근 / 레미콘 / 타일 자재관리")
-st.caption("☁️ 중앙 DB 연결" if USE_POSTGRES else "💻 로컬 SQLite 모드")
+col_logo, col_title = st.columns([1, 5])
 
+with col_logo:
+    st.image("202606220938554371_m.webp", width=85)
+
+with col_title:
+    st.title("Smart Material Manager")
+
+st.caption(f"{SITE_NAME} · 철근 / 레미콘 / 타일 자재관리")
+st.caption("☁ 중앙 DB 연결" if USE_POSTGRES else "💻 로컬 SQLite 모드")
 # ---------------- pages ----------------
 if menu == "한눈에 보기":
     st.subheader("한눈에 보기")
