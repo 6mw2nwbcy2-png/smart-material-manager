@@ -814,32 +814,31 @@ elif menu in ["철근","레미콘","타일"]:
         )
 
         if delivery_type == "현장":
-            if is_admin():
-                delivery_address = st.text_input(
-                    "현장 주소",
-                    key="tile_delivery_address"
-                )
-            else:
-                site_df = read(
-                    "SELECT value FROM settings WHERE key='site_address'"
-                )
+            site_df = read(
+                "SELECT value FROM settings WHERE key='site_address'"
+            )
 
-                delivery_address = (
-                    str(site_df.iloc[0]["value"])
-                    if len(site_df)
-                    else ""
-                )
+            default_site_address = (
+                str(site_df.iloc[0]["value"])
+                if len(site_df)
+                else ""
+            )
 
-                st.info(
-                    f"현장 주소: {delivery_address}"
-                )
+            delivery_address = st.text_input(
+                "현장 주소",
+                value=default_site_address,
+                key="tile_delivery_address_site"
+            )
+
+            st.caption(
+                "현장 주소는 기본 현장 주소가 표시되며, 협력사가 납품 장소에 맞게 수정할 수 있습니다."
+            )
 
         else:
             delivery_address = st.text_input(
                 "시스템욕실 공장 주소",
                 key="tile_factory_address"
             )
-
         st.caption(
             "같은 협력사 품목을 여러 개 한 번에 선택하고, "
             "각 품목별로 납품일을 다르게 지정할 수 있습니다."
