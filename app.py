@@ -655,7 +655,9 @@ st.caption(f"{SITE_NAME} · 철근 / 레미콘 / 타일 자재관리")
 st.caption("☁ 중앙 DB 연결" if USE_POSTGRES else "💻 로컬 SQLite 모드")
 # ---------------- 석재 페이지 연결 ----------------
 if menu == "석재":
-    st.switch_page("pages/4_Stone.py")
+    import runpy
+    runpy.run_path("pages/stone_impl.py", run_name="__main__")
+    st.stop()
 
 # ---------------- pages ----------------
 if menu == "한눈에 보기":
