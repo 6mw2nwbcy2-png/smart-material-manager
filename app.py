@@ -620,7 +620,7 @@ def make_order_pdf(order_row, lines_df):
 st.sidebar.title("메뉴")
 menu = st.sidebar.radio(
     "메뉴",
-    ["한눈에 보기", "대시보드", "철근", "레미콘", "타일", "발주/결재 현황", "관리자 설정"],
+    ["한눈에 보기", "대시보드", "철근", "레미콘", "타일", "석재", "발주/결재 현황", "관리자 설정"],
     label_visibility="collapsed"
 )
 st.sidebar.markdown("---")    
@@ -643,8 +643,6 @@ else:
 
 st.sidebar.caption("v1.1 · CLOUD")
 
-st.sidebar.page_link("pages/4_Stone.py", label="석재")
-
 col_logo, col_title = st.columns([1, 5])
 
 with col_logo:
@@ -655,6 +653,10 @@ with col_title:
 
 st.caption(f"{SITE_NAME} · 철근 / 레미콘 / 타일 자재관리")
 st.caption("☁ 중앙 DB 연결" if USE_POSTGRES else "💻 로컬 SQLite 모드")
+# ---------------- 석재 페이지 연결 ----------------
+if menu == "석재":
+    st.switch_page("pages/4_Stone.py")
+
 # ---------------- pages ----------------
 if menu == "한눈에 보기":
     st.subheader("한눈에 보기")
