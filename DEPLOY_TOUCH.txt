@@ -1,0 +1,1 @@
+Admin session fix verified in app.py: is_admin() uses Streamlit session state; login/logout controls are session-based. Deployment refresh trigger 2026-08-18.
