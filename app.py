@@ -1055,57 +1055,220 @@ elif menu in ["철근","레미콘","타일"]:
                 )
 elif menu == "발주/결재 현황":
     st.subheader("발주 / 결재 현황")
-    orders = read("SELECT * FROM orders ORDER BY id DESC")
+
+    orders = read(
+        "SELECT * FROM orders ORDER BY id DESC"
+    )
+
     if not len(orders):
-        st.write("등록된 발주가 없습니다.")
+        st.info("등록된 발주가 없습니다.")
+
     else:
-        today = date.today()
         for _, r in orders.iterrows():
-            lines = read("""
-                SELECT b.item_name,b.spec,b.unit,ol.qty,ol.destination,ol.requested_delivery_date
-                FROM order_lines ol JOIN budget_items b ON ol.item_id=b.id
-                WHERE ol.order_id=? ORDER BY ol.requested_delivery_date,ol.id
-            """,(int(r.id),))
-            nearest = ""
-            if len(lines):
-                ds = pd.to_datetime(lines.requested_delivery_date, errors="coerce").dropna()
-                if len(ds):
-                    days = (ds.min().date()-today).days
-                    nearest = f"D-{days}" if days >= 0 else f"D+{abs(days)}"
-            status = (
-                "발주완료" if r.order_complete else
-                "내부결재 완료" if r.internal_approval else
-                "협력사 확인완료" if r.partner_confirm else "결재/확인중"
+
+            lines = read(
+                """
+                SELECT
+                    b.item_name,
+                    b.spec,
+                    b.unit,
+                    ol.qty,
+                    ol.destination,
+                    ol.requested_delivery_date,
+                    ol.delivery_recipient,
+                    ol.delivery_phone,
+                    ol.delivery_address
+                FROM order_lines ol
+                JOIN budget_items b
+                    ON ol.item_id=b.id
+                WHERE ol.order_id=?
+                ORDER BY ol.requested_delivery_date, ol.id
+                """,
+                (int(r.id),)
             )
-            with st.expander(f"{r.order_no} | {r.vendor} | {status} | 최근 납품 {nearest}"):
-                st.dataframe(
-                    lines.rename(columns={
-                        "item_name":"품명","spec":"규격","qty":"수량","unit":"단위",
-                        "destination":"납품처","requested_delivery_date":"납품요청일"
-                    }),
-                    use_container_width=True, hide_index=True
+
+            # ---------------- 상태 ----------------
+            status = (
+                "발주완료" if r.order_complete
+                else "내부결재 완료" if r.internal_approval
+                else "협력사 확인완료" if r.partner_confirm
+                else "결재/확인중"
+            )
+
+            # ---------------- 최근 납품일 ----------------
+            nearest = ""
+
+            if len(lines):
+                ds = pd.to_datetime(
+                    lines["requested_delivery_date"],
+                    errors="coerce"
+                ).dropna()
+
+                if len(ds):
+                    nearest_date = ds.min().date()
+                    days = (nearest_date - date.today()).days
+
+                    if days >= 0:
+                        nearest = f"D-{days}"
+                    else:
+                        nearest = f"D+{abs(days)}"
+
+            with st.expander(
+                f"{r.order_no} | {r.vendor} | {status}"
+                + (f" | {nearest}" if nearest else "")
+            ):
+
+                # ==================================================
+                # 발주 기본정보
+                # ==================================================
+                st.markdown("#### 발주 기본정보")
+
+                c1, c2, c3, c4 = st.columns(4)
+
+                c1.metric("발주번호", str(r.order_no))
+                c2.metric("협력사", str(r.vendor))
+                c3.metric("발주일", str(r.order_date))
+                c4.metric("상태", status)
+
+                if str(r.note).strip():
+                    st.caption(f"발주 비고 : {r.note}")
+
+                # ==================================================
+                # 납품 정보
+                # ==================================================
+                st.markdown("#### 납품 정보")
+
+                if len(lines):
+
+                    first = lines.iloc[0]
+
+                    delivery_type = str(
+                        first.get("destination", "") or ""
+                    )
+
+                    recipient = str(
+                        first.get("delivery_recipient", "") or ""
+                    )
+
+                    phone = str(
+                        first.get("delivery_phone", "") or ""
+                    )
+
+                    address = str(
+                        first.get("delivery_address", "") or ""
+                    )
+
+                    d1, d2 = st.columns(2)
+
+                    with d1:
+                        st.write(f"**납품구분** : {delivery_type}")
+                        st.write(f"**받는 사람** : {recipient}")
+                        st.write(f"**연락처** : {phone}")
+
+                    with d2:
+                        st.write(f"**납품주소** : {address}")
+
+                # ==================================================
+                # 품목
+                # ==================================================
+                st.markdown("#### 발주 품목")
+
+                display_lines = lines.rename(
+                    columns={
+                        "item_name": "품명",
+                        "spec": "규격",
+                        "unit": "단위",
+                        "qty": "수량",
+                        "destination": "납품구분",
+                        "requested_delivery_date": "납품요청일"
+                    }
                 )
+
+                show_cols = [
+                    "품명",
+                    "규격",
+                    "단위",
+                    "수량",
+                    "납품구분",
+                    "납품요청일"
+                ]
+
+                st.dataframe(
+                    display_lines[show_cols],
+                    use_container_width=True,
+                    hide_index=True
+                )
+
+                # ==================================================
+                # 관리자 상태 관리
+                # ==================================================
                 if is_admin():
-                    p1 = st.checkbox("협력사 확인", value=bool(r.partner_confirm), key=f"p{r.id}")
-                    p2 = st.checkbox("내부 결재 완료", value=bool(r.internal_approval), key=f"a{r.id}")
-                    p3 = st.checkbox("발주 완료", value=bool(r.order_complete), key=f"o{r.id}")
-                    if st.button("상태 저장", key=f"s{r.id}"):
-                        execute("""UPDATE orders SET partner_confirm=?,internal_approval=?,order_complete=? WHERE id=?""",
-                                (int(p1),int(p2),int(p3),int(r.id)))
+
+                    st.markdown("#### 결재 / 발주 상태")
+
+                    p1 = st.checkbox(
+                        "협력사 확인",
+                        value=bool(r.partner_confirm),
+                        key=f"partner_confirm_{r.id}"
+                    )
+
+                    p2 = st.checkbox(
+                        "내부 결재 완료",
+                        value=bool(r.internal_approval),
+                        key=f"internal_approval_{r.id}"
+                    )
+
+                    p3 = st.checkbox(
+                        "발주 완료",
+                        value=bool(r.order_complete),
+                        key=f"order_complete_{r.id}"
+                    )
+
+                    if st.button(
+                        "상태 저장",
+                        key=f"save_status_{r.id}"
+                    ):
+                        execute(
+                            """
+                            UPDATE orders
+                            SET
+                                partner_confirm=?,
+                                internal_approval=?,
+                                order_complete=?
+                            WHERE id=?
+                            """,
+                            (
+                                int(p1),
+                                int(p2),
+                                int(p3),
+                                int(r.id)
+                            )
+                        )
+
                         st.success("상태 저장 완료")
                         st.rerun()
-                else:
-                    st.caption("발주 상태 수정은 관리자만 가능합니다.")
 
-                pdf_bytes = make_order_pdf(r, lines)
+                else:
+                    st.caption(
+                        "발주 상태 수정은 관리자만 가능합니다."
+                    )
+
+                # ==================================================
+                # PDF
+                # ==================================================
+                pdf_bytes = make_order_pdf(
+                    r,
+                    lines
+                )
+
                 st.download_button(
-                    "PDF 발주서 다운로드",
+                    "📄 발주서 PDF 다운로드",
                     pdf_bytes,
                     file_name=f"{r.order_no}_발주서.pdf",
                     mime="application/pdf",
-                    key=f"pdf_{r.id}"
+                    key=f"detail_pdf_{r.id}",
+                    type="primary"
                 )
-
 elif menu == "관리자 설정":
     st.subheader("관리자 설정")
     if not is_admin():
