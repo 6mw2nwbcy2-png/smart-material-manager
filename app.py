@@ -190,6 +190,40 @@ def seed():
                 VALUES(?,?,?,?,?,?,?,?,?,?)""", r)
 
 init_db()
+# ---------------- 납품정보 DB 확장 ----------------
+def migrate_delivery_columns():
+    columns = [
+        ("delivery_recipient", "TEXT DEFAULT ''"),
+        ("delivery_phone", "TEXT DEFAULT ''"),
+        ("delivery_address", "TEXT DEFAULT ''"),
+    ]
+
+    if USE_POSTGRES:
+        with psycopg2.connect(DATABASE_URL) as c:
+            with c.cursor() as cur:
+                for name, definition in columns:
+                    cur.execute(
+                        f"ALTER TABLE order_lines ADD COLUMN IF NOT EXISTS {name} {definition}"
+                    )
+            c.commit()
+    else:
+        with sqlite3.connect(DB) as c:
+            existing = {
+                row[1]
+                for row in c.execute("PRAGMA table_info(order_lines)").fetchall()
+            }
+
+            for name, definition in columns:
+                if name not in existing:
+                    c.execute(
+                        f"ALTER TABLE order_lines ADD COLUMN {name} {definition}"
+                    )
+
+            c.commit()
+
+
+migrate_delivery_columns()
+
 seed()
 
 # ---------------- helpers ----------------
@@ -245,147 +279,358 @@ PDF_FONT = register_korean_font()
 
 def make_order_pdf(order_row, lines_df):
     buf = io.BytesIO()
+
     doc = SimpleDocTemplate(
-        buf, pagesize=A4, rightMargin=28, leftMargin=28, topMargin=28, bottomMargin=28
+        buf,
+        pagesize=A4,
+        rightMargin=28,
+        leftMargin=28,
+        topMargin=28,
+        bottomMargin=28
     )
+
     styles = getSampleStyleSheet()
+
+    # ---------------- 기본 스타일 ----------------
     title = ParagraphStyle(
-        "titleK", parent=styles["Title"], fontName=PDF_FONT, fontSize=19,
-        leading=23, alignment=TA_CENTER, textColor=colors.HexColor("#153A5B"),
+        "titleK",
+        parent=styles["Title"],
+        fontName=PDF_FONT,
+        fontSize=19,
+        leading=23,
+        alignment=TA_CENTER,
+        textColor=colors.HexColor("#153A5B"),
         spaceAfter=8
     )
+
     normal = ParagraphStyle(
-        "normalK", parent=styles["Normal"], fontName=PDF_FONT, fontSize=8.5,
-        leading=11, alignment=TA_LEFT
+        "normalK",
+        parent=styles["Normal"],
+        fontName=PDF_FONT,
+        fontSize=8.5,
+        leading=11,
+        alignment=TA_CENTER,
+        textColor=colors.black
     )
+
     small = ParagraphStyle(
-        "smallK", parent=normal, fontSize=7.7, leading=10
+        "smallK",
+        parent=normal,
+        fontSize=7.7,
+        leading=10,
+        alignment=TA_CENTER
     )
-    story = [
-        Paragraph("자 재 발 주 서", title),
-        Paragraph(SITE_NAME, ParagraphStyle(
-            "siteK", parent=normal, fontSize=10.5, alignment=TA_CENTER,
-            textColor=colors.HexColor("#5A6470"), spaceAfter=12
-        ))
-    ]
 
+    label = ParagraphStyle(
+        "labelK",
+        parent=normal,
+        fontSize=8.5,
+        leading=11,
+        alignment=TA_CENTER,
+        textColor=colors.white
+    )
+
+    story = []
+
+    # ---------------- 제목 ----------------
+    story.append(
+        Paragraph("자 재 발 주 서", title)
+    )
+
+    story.append(
+        Paragraph(
+            SITE_NAME,
+            ParagraphStyle(
+                "siteK",
+                parent=normal,
+                fontSize=10.5,
+                alignment=TA_CENTER,
+                textColor=colors.HexColor("#5A6470"),
+                spaceAfter=12
+            )
+        )
+    )
+
+    # ---------------- 발주 기본정보 ----------------
     info = [
-        [Paragraph("<b>발주번호</b>", normal), Paragraph(str(order_row["order_no"]), normal),
-         Paragraph("<b>발주일</b>", normal), Paragraph(str(order_row["order_date"]), normal)],
-        [Paragraph("<b>협력사</b>", normal), Paragraph(str(order_row["vendor"]), normal),
-         Paragraph("<b>현장명</b>", normal), Paragraph(SITE_NAME, normal)],
+        [
+            Paragraph("<b>발주번호</b>", label),
+            Paragraph(str(order_row["order_no"]), normal),
+            Paragraph("<b>발주일</b>", label),
+            Paragraph(str(order_row["order_date"]), normal)
+        ],
+        [
+            Paragraph("<b>협력사</b>", label),
+            Paragraph(str(order_row["vendor"]), normal),
+            Paragraph("<b>현장명</b>", label),
+            Paragraph(SITE_NAME, normal)
+        ],
     ]
-    t = Table(info, colWidths=[62, 164, 62, 230])
-    t.setStyle(TableStyle([
-        ("FONTNAME",(0,0),(-1,-1),PDF_FONT),
-        ("BACKGROUND",(0,0),(0,-1),colors.HexColor("#153A5B")),
-        ("BACKGROUND",(2,0),(2,-1),colors.HexColor("#153A5B")),
-        ("TEXTCOLOR",(0,0),(0,-1),colors.white),
-        ("TEXTCOLOR",(2,0),(2,-1),colors.white),
-        ("ALIGN",(0,0),(0,-1),"CENTER"),
-        ("ALIGN",(2,0),(2,-1),"CENTER"),
-        ("GRID",(0,0),(-1,-1),0.55,colors.HexColor("#9AA7B2")),
-        ("VALIGN",(0,0),(-1,-1),"MIDDLE"),
-        ("LEFTPADDING",(0,0),(-1,-1),6),
-        ("RIGHTPADDING",(0,0),(-1,-1),6),
-        ("TOPPADDING",(0,0),(-1,-1),6),
-        ("BOTTOMPADDING",(0,0),(-1,-1),6),
-    ]))
-    story += [t, Spacer(1, 12)]
 
+    info_table = Table(
+        info,
+        colWidths=[62, 164, 62, 230]
+    )
+
+    info_table.setStyle(
+        TableStyle([
+            ("FONTNAME", (0,0), (-1,-1), PDF_FONT),
+
+            # 파란색 구분란 + 흰색 글씨
+            ("BACKGROUND", (0,0), (0,-1), colors.HexColor("#153A5B")),
+            ("BACKGROUND", (2,0), (2,-1), colors.HexColor("#153A5B")),
+            ("TEXTCOLOR", (0,0), (0,-1), colors.white),
+            ("TEXTCOLOR", (2,0), (2,-1), colors.white),
+
+            # 전부 가운데 정렬
+            ("ALIGN", (0,0), (-1,-1), "CENTER"),
+            ("VALIGN", (0,0), (-1,-1), "MIDDLE"),
+
+            ("GRID", (0,0), (-1,-1), 0.55, colors.HexColor("#9AA7B2")),
+
+            ("LEFTPADDING", (0,0), (-1,-1), 6),
+            ("RIGHTPADDING", (0,0), (-1,-1), 6),
+            ("TOPPADDING", (0,0), (-1,-1), 6),
+            ("BOTTOMPADDING", (0,0), (-1,-1), 6),
+        ])
+    )
+
+    story += [
+        info_table,
+        Spacer(1, 10)
+    ]
+
+    # =========================================================
+    # 납품 정보
+    # =========================================================
+
+    if len(lines_df):
+
+        first = lines_df.iloc[0]
+
+        delivery_destination = str(
+            first.get("destination", "") or ""
+        )
+
+        delivery_recipient = str(
+            first.get("delivery_recipient", "") or ""
+        )
+
+        delivery_phone = str(
+            first.get("delivery_phone", "") or ""
+        )
+
+        delivery_address = str(
+            first.get("delivery_address", "") or ""
+        )
+
+        delivery_info = [
+            [
+                Paragraph("<b>납품구분</b>", label),
+                Paragraph(delivery_destination, normal),
+                Paragraph("<b>받는 사람</b>", label),
+                Paragraph(delivery_recipient, normal)
+            ],
+            [
+                Paragraph("<b>연락처</b>", label),
+                Paragraph(delivery_phone, normal),
+                Paragraph("<b>납품 주소</b>", label),
+                Paragraph(delivery_address, normal)
+            ]
+        ]
+
+        delivery_table = Table(
+            delivery_info,
+            colWidths=[62, 164, 62, 230]
+        )
+
+        delivery_table.setStyle(
+            TableStyle([
+                ("FONTNAME", (0,0), (-1,-1), PDF_FONT),
+
+                # 파란색 구분란
+                ("BACKGROUND", (0,0), (0,-1), colors.HexColor("#153A5B")),
+                ("BACKGROUND", (2,0), (2,-1), colors.HexColor("#153A5B")),
+
+                # 구분란 글씨 흰색
+                ("TEXTCOLOR", (0,0), (0,-1), colors.white),
+                ("TEXTCOLOR", (2,0), (2,-1), colors.white),
+
+                # 전부 가운데
+                ("ALIGN", (0,0), (-1,-1), "CENTER"),
+                ("VALIGN", (0,0), (-1,-1), "MIDDLE"),
+
+                ("GRID", (0,0), (-1,-1), 0.55, colors.HexColor("#9AA7B2")),
+
+                ("LEFTPADDING", (0,0), (-1,-1), 6),
+                ("RIGHTPADDING", (0,0), (-1,-1), 6),
+                ("TOPPADDING", (0,0), (-1,-1), 6),
+                ("BOTTOMPADDING", (0,0), (-1,-1), 6),
+            ])
+        )
+
+        story += [
+            delivery_table,
+            Spacer(1, 12)
+        ]
+
+    # ---------------- 품목 내역 ----------------
     line_data = [[
-        Paragraph("<b>No.</b>", small),
-        Paragraph("<b>품명</b>", small),
-        Paragraph("<b>규격</b>", small),
-        Paragraph("<b>수량</b>", small),
-        Paragraph("<b>단위</b>", small),
-        Paragraph("<b>납품처</b>", small),
-        Paragraph("<b>납품요청일</b>", small),
+        Paragraph("<b>No.</b>", label),
+        Paragraph("<b>품명</b>", label),
+        Paragraph("<b>규격</b>", label),
+        Paragraph("<b>수량</b>", label),
+        Paragraph("<b>단위</b>", label),
+        Paragraph("<b>납품처</b>", label),
+        Paragraph("<b>납품요청일</b>", label),
     ]]
+
     for i, r in lines_df.reset_index(drop=True).iterrows():
+
+        qty = float(r["qty"])
+
         line_data.append([
-            str(i+1),
+            Paragraph(str(i + 1), small),
             Paragraph(str(r["item_name"]), small),
             Paragraph(str(r["spec"] or ""), small),
-            f'{float(r["qty"]):,.2f}'.rstrip("0").rstrip("."),
-            str(r["unit"]),
+            Paragraph(
+                f"{qty:,.2f}".rstrip("0").rstrip("."),
+                small
+            ),
+            Paragraph(str(r["unit"]), small),
             Paragraph(str(r["destination"]), small),
             Paragraph(str(r["requested_delivery_date"]), small),
         ])
 
-    lt = Table(line_data, colWidths=[27, 145, 70, 55, 40, 95, 86], repeatRows=1)
-    lt.setStyle(TableStyle([
-        ("FONTNAME",(0,0),(-1,-1),PDF_FONT),
-        ("BACKGROUND",(0,0),(-1,0),colors.HexColor("#153A5B")),
-        ("TEXTCOLOR",(0,0),(-1,0),colors.white),
-        ("ALIGN",(0,0),(-1,0),"CENTER"),
-        ("ALIGN",(0,1),(0,-1),"CENTER"),
-        ("ALIGN",(3,1),(4,-1),"CENTER"),
-        ("ALIGN",(6,1),(6,-1),"CENTER"),
-        ("GRID",(0,0),(-1,-1),0.5,colors.HexColor("#A9A9A9")),
-        ("VALIGN",(0,0),(-1,-1),"MIDDLE"),
-        ("TOPPADDING",(0,0),(-1,-1),5),
-        ("BOTTOMPADDING",(0,0),(-1,-1),5),
-    ]))
-    story += [lt, Spacer(1, 12)]
+    line_table = Table(
+        line_data,
+        colWidths=[27, 145, 70, 55, 40, 95, 86],
+        repeatRows=1
+    )
 
-    note = str(order_row.get("note","") or "")
-    if note:
-        nt = Table([[Paragraph("<b>비고</b>", normal), Paragraph(note, normal)]],
-                   colWidths=[62, 456])
-        nt.setStyle(TableStyle([
-            ("FONTNAME",(0,0),(-1,-1),PDF_FONT),
-            ("BACKGROUND",(0,0),(0,0),colors.HexColor("#153A5B")),
-            ("TEXTCOLOR",(0,0),(0,0),colors.white),
-            ("ALIGN",(0,0),(0,0),"CENTER"),
-            ("GRID",(0,0),(-1,-1),0.5,colors.HexColor("#A9A9A9")),
-            ("VALIGN",(0,0),(-1,-1),"TOP"),
-            ("LEFTPADDING",(0,0),(-1,-1),6),
-            ("RIGHTPADDING",(0,0),(-1,-1),6),
-            ("TOPPADDING",(0,0),(-1,-1),6),
-            ("BOTTOMPADDING",(0,0),(-1,-1),6),
-        ]))
-        story += [nt, Spacer(1, 14)]
+    line_table.setStyle(
+        TableStyle([
+            ("FONTNAME", (0,0), (-1,-1), PDF_FONT),
 
-    approvals = [
-        [Paragraph("<b>협력사</b>", normal),
-         Paragraph("<b>현대건설 담당</b>", normal),
-         Paragraph("<b>검토</b>", normal),
-         Paragraph("<b>승인</b>", normal)],
-        ["","","",""]
+            # 헤더 파란색
+            ("BACKGROUND", (0,0), (-1,0), colors.HexColor("#153A5B")),
+
+            # 헤더 흰색
+            ("TEXTCOLOR", (0,0), (-1,0), colors.white),
+
+            # 전체 가운데 정렬
+            ("ALIGN", (0,0), (-1,-1), "CENTER"),
+            ("VALIGN", (0,0), (-1,-1), "MIDDLE"),
+
+            ("GRID", (0,0), (-1,-1), 0.5, colors.HexColor("#A9A9A9")),
+
+            ("TOPPADDING", (0,0), (-1,-1), 5),
+            ("BOTTOMPADDING", (0,0), (-1,-1), 5),
+            ("LEFTPADDING", (0,0), (-1,-1), 4),
+            ("RIGHTPADDING", (0,0), (-1,-1), 4),
+        ])
+    )
+
+    story += [
+        line_table,
+        Spacer(1, 12)
     ]
-    at = Table(approvals, colWidths=[129.5]*4, rowHeights=[25,45])
-    at.setStyle(TableStyle([
-        ("FONTNAME",(0,0),(-1,-1),PDF_FONT),
-        ("BACKGROUND",(0,0),(-1,0),colors.HexColor("#153A5B")),
-        ("TEXTCOLOR",(0,0),(-1,0),colors.white),
-        ("ALIGN",(0,0),(-1,-1),"CENTER"),
-        ("VALIGN",(0,0),(-1,-1),"MIDDLE"),
-        ("GRID",(0,0),(-1,-1),0.65,colors.HexColor("#7F8C8D")),
-    ]))
-    story += [at, Spacer(1, 9)]
-    story.append(Paragraph(
-        "※ 품목별 지정 납품처 및 납품요청일을 준수하여 납품 바랍니다.",
-        small
-    ))
-    doc.build(story)
-    return buf.getvalue()
 
+    # ---------------- 비고 ----------------
+    note = str(
+        order_row.get("note", "") or ""
+    )
+
+    if note:
+        note_table = Table(
+            [[
+                Paragraph("<b>비고</b>", label),
+                Paragraph(note, normal)
+            ]],
+            colWidths=[62, 456]
+        )
+
+        note_table.setStyle(
+            TableStyle([
+                ("FONTNAME", (0,0), (-1,-1), PDF_FONT),
+                ("BACKGROUND", (0,0), (0,0), colors.HexColor("#153A5B")),
+                ("TEXTCOLOR", (0,0), (0,0), colors.white),
+                ("ALIGN", (0,0), (-1,-1), "CENTER"),
+                ("VALIGN", (0,0), (-1,-1), "MIDDLE"),
+                ("GRID", (0,0), (-1,-1), 0.5, colors.HexColor("#A9A9A9")),
+                ("LEFTPADDING", (0,0), (-1,-1), 6),
+                ("RIGHTPADDING", (0,0), (-1,-1), 6),
+                ("TOPPADDING", (0,0), (-1,-1), 6),
+                ("BOTTOMPADDING", (0,0), (-1,-1), 6),
+            ])
+        )
+
+        story += [
+            note_table,
+            Spacer(1, 14)
+        ]
+
+    # ---------------- 결재란 ----------------
+    approvals = [
+        [
+            Paragraph("<b>협력사</b>", label),
+            Paragraph("<b>현대건설 담당</b>", label),
+            Paragraph("<b>검토</b>", label),
+            Paragraph("<b>승인</b>", label)
+        ],
+        ["", "", "", ""]
+    ]
+
+    approval_table = Table(
+        approvals,
+        colWidths=[129.5] * 4,
+        rowHeights=[25, 45]
+    )
+
+    approval_table.setStyle(
+        TableStyle([
+            ("FONTNAME", (0,0), (-1,-1), PDF_FONT),
+
+            ("BACKGROUND", (0,0), (-1,0), colors.HexColor("#153A5B")),
+            ("TEXTCOLOR", (0,0), (-1,0), colors.white),
+
+            ("ALIGN", (0,0), (-1,-1), "CENTER"),
+            ("VALIGN", (0,0), (-1,-1), "MIDDLE"),
+
+            ("GRID", (0,0), (-1,-1), 0.65, colors.HexColor("#7F8C8D")),
+        ])
+    )
+
+    story += [
+        approval_table,
+        Spacer(1, 9)
+    ]
+
+    story.append(
+        Paragraph(
+            "※ 품목별 지정 납품처 및 납품요청일을 준수하여 납품 바랍니다.",
+            small
+        )
+    )
+
+    doc.build(story)
+
+    return buf.getvalue()
 # ---------------- sidebar ----------------
 st.sidebar.title("메뉴")
 menu = st.sidebar.radio(
-    "",
-    ["한눈에 보기","대시보드","철근","레미콘","타일","발주/결재 현황","관리자 설정"]
+    "메뉴",
+    ["한눈에 보기", "대시보드", "철근", "레미콘", "타일", "발주/결재 현황", "관리자 설정"],
+    label_visibility="collapsed"
 )
-
-st.sidebar.markdown("---")
+st.sidebar.markdown("---")    
 if is_admin():
     st.sidebar.success("관리자 모드")
     if st.sidebar.button("관리자 로그아웃"):
         st.session_state["is_admin"] = False
         st.rerun()
 else:
-    st.sidebar.caption("일반 사용자: 투입내역 입력 가능")
+    st.sidebar.caption("일반 사용자: 투입내역 입력 가능")   
     with st.sidebar.expander("관리자 로그인"):
         pw = st.text_input("관리자 비밀번호", type="password")
         if st.button("로그인"):
@@ -540,73 +785,274 @@ elif menu in ["철근","레미콘","타일"]:
         if vendors:
             vendor = st.selectbox("협력사", vendors)
             odf = df[df.vendor==vendor].copy()
-
             req = odf[["id","item_name","spec","tile_type","application_type",
-                       "default_destination","unit","budget_qty","ordered"]].copy()
-            req.columns = ["id","품명","규격","타일구분","적용구분","납품처","단위","예산","누적발주"]
+                       "unit","budget_qty","ordered"]].copy()
+            req.columns = ["id","품명","규격","타일구분","적용구분","단위","예산","누적발주"]
             req["발주수량"] = 0.0
             req["납품요청일"] = date.today()
 
-            st.caption("같은 협력사 품목을 여러 개 한 번에 선택하고, 각 품목별로 납품일을 다르게 지정할 수 있습니다.")
-            req_edit = st.data_editor(
-                req,
-                use_container_width=True,
-                hide_index=True,
-                disabled=["품명","규격","타일구분","적용구분","단위","예산","누적발주"],
-                column_config={
-                    "id": None,
-                    "납품처": st.column_config.SelectboxColumn(options=["현장","시스템욕실 공장"]),
-                    "발주수량": st.column_config.NumberColumn(min_value=0.0, step=0.1),
-                    "납품요청일": st.column_config.DateColumn(format="YYYY-MM-DD"),
+        # ---------------- 납품 정보 ----------------
+        st.markdown("### 납품 정보")
+
+        delivery_type = st.radio(
+            "납품구분",
+            ["시스템욕실 공장", "현장"],
+            horizontal=True,
+            key="tile_delivery_type"
+        )
+
+        d1, d2 = st.columns(2)
+
+        delivery_recipient = d1.text_input(
+            "받는 사람",
+            key="tile_delivery_recipient"
+        )
+
+        delivery_phone = d2.text_input(
+            "연락처",
+            key="tile_delivery_phone"
+        )
+
+        if delivery_type == "현장":
+            if is_admin():
+                delivery_address = st.text_input(
+                    "현장 주소",
+                    key="tile_delivery_address"
+                )
+            else:
+                site_df = read(
+                    "SELECT value FROM settings WHERE key='site_address'"
+                )
+
+                delivery_address = (
+                    str(site_df.iloc[0]["value"])
+                    if len(site_df)
+                    else ""
+                )
+
+                st.info(
+                    f"현장 주소: {delivery_address}"
+                )
+
+        else:
+            delivery_address = st.text_input(
+                "시스템욕실 공장 주소",
+                key="tile_factory_address"
+            )
+
+        st.caption(
+            "같은 협력사 품목을 여러 개 한 번에 선택하고, "
+            "각 품목별로 납품일을 다르게 지정할 수 있습니다."
+        )
+
+        st.markdown("---")
+        # ---------------- 품목 선택 ----------------
+        req_edit = st.data_editor(
+            req,
+            use_container_width=True,
+            hide_index=True,
+            disabled=[
+                "품명",
+                "규격",
+                "타일구분",
+                "적용구분",
+                "단위",
+                "예산",
+                "누적발주"
+            ],
+            column_config={   
+                                 "id": None,
+                    "발주수량": st.column_config.NumberColumn(
+                        min_value=0.0,
+                        step=0.1
+                    ),
+                    "납품요청일": st.column_config.DateColumn(
+                        format="YYYY-MM-DD"
+                    ),
                 },
                 key="tile_multi_order"
             )
 
-            c1,c2 = st.columns(2)
-            order_date = c1.date_input("발주일", date.today(), key="multi_order_date")
-            order_note = c2.text_input("발주 비고", key="multi_order_note")
+            # ---------------- 발주 기본정보 ----------------
+        c1, c2 = st.columns(2)
 
-            if st.button("선택 품목 일괄 발주 + PDF 생성", type="primary"):
-                selected = req_edit[req_edit["발주수량"] > 0].copy()
+        order_date = c1.date_input(
+                "발주일",
+                date.today(),
+                key="multi_order_date"
+            )
+
+        order_note = c2.text_input(
+                "발주 비고",
+                key="multi_order_note"
+            )
+
+            # ---------------- 발주 + PDF ----------------
+        if st.button(
+                "선택 품목 일괄 발주 + PDF 생성",
+                type="primary"
+            ):
+                selected = req_edit[
+                    req_edit["발주수량"] > 0
+                ].copy()
+
                 if not len(selected):
                     st.warning("발주수량을 입력한 품목이 없습니다.")
-                else:
-                    order_no = f"T-{order_date.strftime('%Y%m%d')}-{datetime.now().strftime('%H%M%S')}"
-                    execute("""INSERT INTO orders(order_no,category,vendor,order_date,note)
-                               VALUES(?,?,?,?,?)""",
-                            (order_no,"타일",vendor,str(order_date),order_note))
-                    oid = int(read("SELECT id FROM orders WHERE order_no=?", (order_no,)).iloc[0]["id"])
 
+                elif not delivery_recipient.strip():
+                    st.warning("받는 사람을 입력해주세요.")
+
+                elif not delivery_phone.strip():
+                    st.warning("연락처를 입력해주세요.")
+
+                elif not delivery_address.strip():
+                    if delivery_type == "현장" and not is_admin():
+                        st.warning("현장 주소는 시공사 관리자만 입력할 수 있습니다.")
+                    else:
+                        st.warning("주소를 입력해주세요.")
+
+                else:
+                    order_no = (
+                        f"T-{order_date.strftime('%Y%m%d')}-"
+                        f"{datetime.now().strftime('%H%M%S')}"
+                    )
+
+                    execute(
+                        """INSERT INTO orders(
+                            order_no,
+                            category,
+                            vendor,
+                            order_date,
+                            note
+                        )
+                        VALUES(?,?,?,?,?)""",
+                        (
+                            order_no,
+                            "타일",
+                            vendor,
+                            str(order_date),
+                            order_note
+                        )
+                    )
+
+                    oid = int(
+                        read(
+                            "SELECT id FROM orders WHERE order_no=?",
+                            (order_no,)
+                        ).iloc[0]["id"]
+                    )
+
+                    # ---------------- 발주 품목 저장 ----------------
                     for _, r in selected.iterrows():
+
                         item_id = int(r["id"])
                         qty = float(r["발주수량"])
-                        destination = str(r["납품처"])
-                        d = pd.to_datetime(r["납품요청일"]).date().isoformat()
-                        execute("""INSERT INTO order_lines(order_id,item_id,qty,requested_delivery_date,destination)
-                                   VALUES(?,?,?,?,?)""",
-                                (oid,item_id,qty,d,destination))
-                        execute("""INSERT INTO transactions(tx_date,item_id,tx_type,qty,destination,note,input_user)
-                                   VALUES(?,?,?,?,?,?,?)""",
-                                (str(order_date),item_id,"발주",qty,destination,f"발주서 {order_no}",st.session_state.get("multi_order_writer", "") or "일반사용자"))
 
-                    lines = read("""
-                    SELECT b.item_name,b.spec,b.unit,ol.qty,ol.destination,ol.requested_delivery_date
-                    FROM order_lines ol
-                    JOIN budget_items b ON ol.item_id=b.id
-                    WHERE ol.order_id=? ORDER BY ol.requested_delivery_date,ol.id
-                    """,(oid,))
-                    order_row = read("SELECT * FROM orders WHERE id=?", (oid,)).iloc[0]
-                    st.session_state["last_pdf"] = make_order_pdf(order_row, lines)
-                    st.session_state["last_pdf_name"] = f"{order_no}_발주서.pdf"
-                    st.success(f"{len(selected)}개 품목이 한 장의 발주서로 생성되었습니다.")
+                        d = (
+                            pd.to_datetime(
+                                r["납품요청일"]
+                            ).date().isoformat()
+                        )
 
-            if st.session_state.get("last_pdf"):
-                st.download_button(
-                    "📄 일괄 발주서 PDF 다운로드",
-                    st.session_state["last_pdf"],
-                    file_name=st.session_state["last_pdf_name"],
-                    mime="application/pdf",
-                    type="primary"
+                        execute(
+                            """INSERT INTO order_lines(
+                                order_id,
+                                item_id,
+                                qty,
+                                requested_delivery_date,
+                                destination,
+                                delivery_recipient,
+                                delivery_phone,
+                                delivery_address
+                            )
+                            VALUES(?,?,?,?,?,?,?,?)""",
+                            (
+                                oid,
+                                item_id,
+                                qty,
+                                d,
+                                delivery_type,
+                                delivery_recipient.strip(),
+                                delivery_phone.strip(),
+                                delivery_address.strip()
+                            )
+                        )
+
+                        execute(
+                            """INSERT INTO transactions(
+                                tx_date,
+                                item_id,
+                                tx_type,
+                                qty,
+                                destination,
+                                note,
+                                input_user
+                            )
+                            VALUES(?,?,?,?,?,?,?)""",
+                            (
+                                str(order_date),
+                                item_id,
+                                "발주",
+                                qty,
+                                delivery_type,
+                                f"발주서 {order_no}",
+                                st.session_state.get(
+                                    "multi_order_writer",
+                                    ""
+                                ) or "일반사용자"
+                            )
+                        )
+
+                    # ---------------- PDF용 데이터 ----------------
+                    lines = read(
+                        """
+                        SELECT
+                            b.item_name,
+                            b.spec,
+                            b.unit,
+                            ol.qty,
+                            ol.destination,
+                            ol.requested_delivery_date,
+                            ol.delivery_recipient,
+                            ol.delivery_phone,
+                            ol.delivery_address
+                        FROM order_lines ol
+                        JOIN budget_items b
+                            ON ol.item_id=b.id
+                        WHERE ol.order_id=?
+                        ORDER BY
+                            ol.requested_delivery_date,
+                            ol.id
+                        """,
+                        (oid,)
+                    )
+
+                    order_row = read(
+                        "SELECT * FROM orders WHERE id=?",
+                        (oid,)
+                    ).iloc[0]
+
+                    st.session_state["last_pdf"] = make_order_pdf(
+                        order_row,
+                        lines
+                    )
+
+                    st.session_state["last_pdf_name"] = (
+                        f"{order_no}_발주서.pdf"
+                    )
+
+                    st.success(
+                        f"{len(selected)}개 품목이 한 장의 발주서로 생성되었습니다."
+                    )
+
+            # ---------------- PDF 다운로드 ----------------
+        if st.session_state.get("last_pdf"):
+            st.download_button(
+                "📄 일괄 발주서 PDF 다운로드",
+                st.session_state["last_pdf"],
+                file_name=st.session_state["last_pdf_name"],
+                mime="application/pdf",
+                type="primary"
                 )
 elif menu == "발주/결재 현황":
     st.subheader("발주 / 결재 현황")
