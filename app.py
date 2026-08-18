@@ -643,6 +643,8 @@ else:
 
 st.sidebar.caption("v1.1 · CLOUD")
 
+st.sidebar.page_link("pages/4_Stone.py", label="석재")
+
 col_logo, col_title = st.columns([1, 5])
 
 with col_logo:
