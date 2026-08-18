@@ -911,12 +911,36 @@ elif menu in ["철근","레미콘","타일"]:
                         st.warning("주소를 입력해주세요.")
 
                 else:
-                    order_no = (
-                        f"T-{order_date.strftime('%Y%m%d')}-"
-                        f"{datetime.now().strftime('%H%M%S')}"
-                    )
+                                    order_date_str = order_date.strftime("%Y%m%d")
 
-                    execute(
+                existing_orders = read(
+                    """
+                    SELECT order_no
+                    FROM orders
+                    WHERE order_no LIKE ?
+                    """,
+                    (f"{order_date_str}-%",)
+                )
+
+                seq = 1
+
+                if len(existing_orders):
+                    numbers = []
+
+                    for x in existing_orders["order_no"]:
+                        try:
+                            numbers.append(
+                                int(str(x).split("-")[-1])
+                            )
+                        except:
+                            pass
+
+                    if numbers:
+                        seq = max(numbers) + 1
+
+                order_no = f"{order_date_str}-{seq:03d}"
+
+                execute(
                         """INSERT INTO orders(
                             order_no,
                             category,
@@ -934,7 +958,7 @@ elif menu in ["철근","레미콘","타일"]:
                         )
                     )
 
-                    oid = int(
+                oid = int(
                         read(
                             "SELECT id FROM orders WHERE order_no=?",
                             (order_no,)
@@ -942,7 +966,7 @@ elif menu in ["철근","레미콘","타일"]:
                     )
 
                     # ---------------- 발주 품목 저장 ----------------
-                    for _, r in selected.iterrows():
+                for _, r in selected.iterrows():
 
                         item_id = int(r["id"])
                         qty = float(r["발주수량"])
@@ -1003,7 +1027,7 @@ elif menu in ["철근","레미콘","타일"]:
                         )
 
                     # ---------------- PDF용 데이터 ----------------
-                    lines = read(
+                lines = read(
                         """
                         SELECT
                             b.item_name,
@@ -1026,21 +1050,21 @@ elif menu in ["철근","레미콘","타일"]:
                         (oid,)
                     )
 
-                    order_row = read(
+                order_row = read(
                         "SELECT * FROM orders WHERE id=?",
                         (oid,)
                     ).iloc[0]
 
-                    st.session_state["last_pdf"] = make_order_pdf(
+                st.session_state["last_pdf"] = make_order_pdf(
                         order_row,
                         lines
                     )
 
-                    st.session_state["last_pdf_name"] = (
+                st.session_state["last_pdf_name"] = (
                         f"{order_no}_발주서.pdf"
                     )
 
-                    st.success(
+                st.success(
                         f"{len(selected)}개 품목이 한 장의 발주서로 생성되었습니다."
                     )
 
