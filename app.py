@@ -228,7 +228,8 @@ seed()
 
 # ---------------- helpers ----------------
 def is_admin():
-    return bool(st.session_state.get("is_admin", False))
+    # 테스트/초기 운영: 링크 접속자는 모두 관리자 수준의 입력·수정 권한을 가짐
+    return True
 
 def get_totals(category=None):
     where = "WHERE b.active=1"
