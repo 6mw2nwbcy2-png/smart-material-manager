@@ -1,0 +1,138 @@
+name: One-time dashboard patch
+
+on:
+  push:
+    branches: [main]
+
+permissions:
+  contents: write
+
+jobs:
+  patch:
+    if: github.actor != 'github-actions[bot]'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Patch app.py
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+          p = Path('app.py')
+          s = p.read_text(encoding='utf-8')
+          if 'DASHBOARD_DELIVERY_V2' in s:
+              raise SystemExit(0)
+
+          old = 'migrate_delivery_columns()\n\nseed()'
+          new = '''migrate_delivery_columns()
+
+# 지급자재 반입일정/보관위치 확장
+DASHBOARD_DELIVERY_V2 = True
+def migrate_supply_columns():
+    columns = [("planned_delivery_date", "TEXT DEFAULT ''"), ("storage_location", "TEXT DEFAULT ''")]
+    if USE_POSTGRES:
+        with psycopg2.connect(DATABASE_URL) as c:
+            with c.cursor() as cur:
+                for name, definition in columns:
+                    cur.execute(f"ALTER TABLE budget_items ADD COLUMN IF NOT EXISTS {name} {definition}")
+            c.commit()
+    else:
+        with sqlite3.connect(DB) as c:
+            existing = {row[1] for row in c.execute("PRAGMA table_info(budget_items)").fetchall()}
+            for name, definition in columns:
+                if name not in existing:
+                    c.execute(f"ALTER TABLE budget_items ADD COLUMN {name} {definition}")
+            c.commit()
+
+migrate_supply_columns()
+seed()'''
+          s = s.replace(old, new, 1)
+
+          old = '''           b.tile_type,b.application_type,b.default_destination,
+           COALESCE(SUM(CASE WHEN t.tx_type='발주' THEN t.qty ELSE 0 END),0) AS ordered,'''
+          new = '''           b.tile_type,b.application_type,b.default_destination,
+           COALESCE(b.planned_delivery_date,'') AS planned_delivery_date,
+           COALESCE(b.storage_location,'') AS storage_location,
+           COALESCE(SUM(CASE WHEN t.tx_type='발주' THEN t.qty ELSE 0 END),0) AS ordered,'''
+          s = s.replace(old, new, 1)
+
+          s = s.replace('"철근","레미콘","타일","석재","발주/결재 현황"', '"철근","레미콘","타일","석재","지급자재","발주/결재 현황"', 1)
+
+          stone = '''if menu == "석재":
+    import runpy
+    runpy.run_path("pages/stone_impl.py", run_name="__main__")
+    st.stop()
+'''
+          supply = stone + '''
+if menu == "지급자재":
+    import runpy
+    runpy.run_path("pages/5_Supply.py", run_name="__main__")
+    st.stop()
+'''
+          s = s.replace(stone, supply, 1)
+
+          start = s.index('if menu == "한눈에 보기":')
+          end = s.index('elif menu == "대시보드":', start)
+          enhanced = '''if menu == "한눈에 보기":
+    st.subheader("한눈에 보기")
+    totals = get_totals()
+    orders = read("SELECT * FROM orders ORDER BY id DESC")
+    today = date.today()
+
+    c1,c2,c3,c4 = st.columns(4)
+    c1.metric("등록 예산 품목", f"{len(totals)}종")
+    c2.metric("철근 재고", f"{totals.loc[totals.category=='철근','재고'].sum():,.1f} t")
+    c3.metric("발주 진행 건", f"{len(orders[orders.order_complete==0]) if len(orders) else 0}건")
+
+    due7 = 0
+    if len(orders):
+        line_dates = read("""SELECT requested_delivery_date FROM order_lines ol
+                             JOIN orders o ON ol.order_id=o.id WHERE o.order_complete=0""")
+        for x in pd.to_datetime(line_dates.requested_delivery_date, errors="coerce"):
+            if pd.notna(x) and 0 <= (x.date()-today).days <= 7:
+                due7 += 1
+    c4.metric("7일 이내 납품 품목", f"{due7}건")
+
+    st.markdown("### 📅 자재별 현장 반입 일정")
+    if len(totals):
+        schedule = totals[["category","vendor","item_name","spec","unit","planned_delivery_date","received","storage_location"]].copy()
+        schedule["_date"] = pd.to_datetime(schedule["planned_delivery_date"], errors="coerce")
+        schedule["상태"] = "일정 미등록"
+        schedule.loc[schedule["_date"].notna(), "상태"] = "반입예정"
+        schedule.loc[(schedule["_date"].notna()) & (schedule["_date"].dt.date < today) & (schedule["received"] <= 0), "상태"] = "반입지연"
+        schedule.loc[(schedule["_date"].notna()) & (schedule["_date"].dt.date <= today) & (schedule["received"] > 0), "상태"] = "입고진행"
+        schedule = schedule.sort_values(["_date","category","item_name"], na_position="last")
+        schedule = schedule.rename(columns={"category":"공종","vendor":"협력사","item_name":"품명","spec":"규격","unit":"단위","planned_delivery_date":"현장반입 예정일","received":"누적입고","storage_location":"보관위치"})
+        st.dataframe(schedule[["공종","협력사","품명","규격","단위","현장반입 예정일","상태","누적입고","보관위치"]], use_container_width=True, hide_index=True)
+    else:
+        st.info("등록된 자재가 없습니다.")
+
+    st.markdown("### 📊 예산 대비 입고 현황")
+    if len(totals):
+        chart_cat = st.selectbox("공종 선택", ["전체"] + sorted(totals["category"].dropna().unique().tolist()), key="dashboard_chart_category")
+        chart_df = totals.copy()
+        if chart_cat != "전체":
+            chart_df = chart_df[chart_df["category"] == chart_cat].copy()
+        chart_df["입고율"] = 0.0
+        mask = chart_df["budget_qty"] > 0
+        chart_df.loc[mask, "입고율"] = (chart_df.loc[mask, "received"] / chart_df.loc[mask, "budget_qty"] * 100).round(1)
+        chart_df["품목"] = chart_df.apply(lambda r: f"{r['item_name']} {r['spec']}".strip(), axis=1)
+        graph = chart_df[["품목","입고율"]].set_index("품목")
+        st.bar_chart(graph, y="입고율", use_container_width=True)
+        summary = chart_df[["category","item_name","spec","unit","budget_qty","received","입고율"]].copy()
+        summary.columns = ["공종","품명","규격","단위","예산수량","누적입고","입고율(%)"]
+        st.dataframe(summary, use_container_width=True, hide_index=True)
+
+    st.info("일반 사용자는 자재 투입수량을 입력할 수 있고, 예산/품목/입고/발주상태 수정은 관리자만 가능합니다. 반입일정과 보관위치는 지급자재 메뉴에서 관리합니다.")
+
+'''
+          s = s[:start] + enhanced + s[end:]
+          p.write_text(s, encoding='utf-8')
+          PY
+      - name: Commit patch
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add app.py
+          git diff --cached --quiet && exit 0
+          git commit -m "한눈에 보기 반입일정 및 예산 대비 입고 그래프 추가"
+          git push
