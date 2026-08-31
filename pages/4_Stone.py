@@ -1,12 +1,13 @@
 """Stable stone entrypoint.
-Runs the original feature-rich stone UI, but swaps its PostgreSQL-only bootstrap for
-SQLite-compatible storage while the central DB connection is being stabilized.
+Restores the original feature-rich stone order UI while keeping PostgreSQL calls out
+of the deployed backup/stabilization runtime.
 """
 from pathlib import Path
 
 SRC = Path(__file__).with_name("stone_impl_v2.py")
 source = SRC.read_text(encoding="utf-8")
 
+# 1) Replace the PostgreSQL-only bootstrap with SQLite-compatible storage.
 start = source.index("DATABASE_URL = get_database_url()")
 end = source.index("def seed_stone_items():")
 
@@ -91,5 +92,40 @@ def ensure_schema():
 '''
 
 source = source[:start] + sqlite_bootstrap + source[end:]
-source = source.replace('st.caption("☁ 중앙 DB 연결")', 'st.caption("🛡 안정화 모드 · 원래 석재 기능 복구")', 1)
+
+# 2) Stone page should NOT contain separate admin budget/new-item forms.
+admin_start_marker = '# --------------------------------------------------\n# 관리자: 예산 / 품목 관리\n# --------------------------------------------------'
+admin_end_marker = 'st.markdown("---")\nst.markdown("### 석재 현황")'
+a = source.find(admin_start_marker)
+b = source.find(admin_end_marker)
+if a >= 0 and b > a:
+    source = source[:a] + source[b:]
+
+# 3) Remove the old partner item-registration form entirely.
+partner_start_marker = '# --------------------------------------------------\n# 협력사 품목 등록: 폼 제출 전에는 아무것도 DB에 저장하지 않음\n# --------------------------------------------------'
+partner_end_marker = '# --------------------------------------------------\n# 투입내역: 입력 중에는 저장하지 않고 \'저장\' 시에만 DB 반영\n# --------------------------------------------------'
+a = source.find(partner_start_marker)
+b = source.find(partner_end_marker)
+if a >= 0 and b > a:
+    source = source[:a] + source[b:]
+
+# 4) Rename the actual order form to the requested partner stone order form.
+source = source.replace('st.markdown("### 석재 발주서 작성")', 'st.markdown("### 협력사 석재 발주서")', 1)
+source = source.replace(
+    'st.info("품목·납품정보·발주 비고·도해도를 모두 입력한 뒤 마지막 저장 버튼을 눌러주세요.")',
+    'st.info("협력사·품목·납품정보·발주 비고·도해도/첨부파일을 모두 입력한 뒤 마지막 저장 버튼을 눌러주세요.")',
+    1,
+)
+source = source.replace(
+    'st.caption("도해도, PDF, DWG, DXF, 이미지 등을 여러 개 첨부할 수 있습니다.")',
+    'st.caption("도해도와 PDF, Excel(XLS/XLSX), CAD(DWG/DXF), 이미지 등 여러 파일을 한 번에 첨부할 수 있습니다.")',
+    1,
+)
+source = source.replace(
+    'attachments = st.file_uploader("도해도 및 첨부파일 선택", accept_multiple_files=True, key="stone_order_attachments_v2")',
+    'attachments = st.file_uploader("도해도 및 첨부파일 선택", type=["pdf","xls","xlsx","dwg","dxf","png","jpg","jpeg","webp","bmp","tif","tiff"], accept_multiple_files=True, key="stone_order_attachments_v2")',
+    1,
+)
+
+source = source.replace('st.caption("☁ 중앙 DB 연결")', 'st.caption("🛡 안정화 모드 · 석재 발주 기능 복구")', 1)
 exec(compile(source, str(SRC), "exec"), globals(), globals())
