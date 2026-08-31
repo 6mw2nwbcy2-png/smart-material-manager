@@ -1,0 +1,82 @@
+name: Streamlit CI
+
+on:
+  push:
+    branches: [main, develop]
+  pull_request:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.13'
+          cache: pip
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Compile Python files
+        run: |
+          python -m py_compile app.py app_snapshot.py pages/4_Stone.py pages/stone_impl.py pages/stone_impl_v2.py
+
+      - name: Verify stone stabilization markers
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+          wrapper = Path('pages/4_Stone.py').read_text(encoding='utf-8')
+          base = Path('pages/stone_impl_v2.py').read_text(encoding='utf-8')
+          required_wrapper = [
+              '협력사 석재 발주서',
+              'stone_order_form_v3',
+              'stone_order_attachments_v3',
+              '발주서 삭제',
+              '결재 완료',
+          ]
+          required_base = [
+              'DATABASE_URL = get_database_url()',
+              'def seed_stone_items():',
+              '### 석재 발주서 작성',
+              '### 최근 석재 발주 / 도해도',
+          ]
+          for marker in required_wrapper:
+              assert marker in wrapper, f'missing wrapper marker: {marker}'
+          for marker in required_base:
+              assert marker in base, f'missing base marker: {marker}'
+          print('stone markers ok')
+          PY
+
+      - name: Streamlit smoke test
+        run: |
+          python - <<'PY'
+          from streamlit.testing.v1 import AppTest
+
+          at = AppTest.from_file('app.py', default_timeout=30).run()
+          assert not at.exception, at.exception
+
+          # Stone page must render for a normal user even when budget item vendor is blank.
+          at.sidebar.radio[0].set_value('석재')
+          at.run()
+          assert not at.exception, at.exception
+          page_text = '\n'.join(str(x.value) for x in at.markdown)
+          assert '협력사 석재 발주서' in page_text, page_text
+          labels = [getattr(x, 'label', '') for x in at.text_input]
+          assert '협력사명' in labels, labels
+
+          # Admin item management must render without an exception.
+          at.session_state['is_admin'] = True
+          at.sidebar.radio[0].set_value('관리자 설정')
+          at.run()
+          assert not at.exception, at.exception
+          admin_text = '\n'.join(str(x.value) for x in at.markdown)
+          assert '예산 / 품목 관리' in admin_text, admin_text
+          print('streamlit smoke test ok')
+          PY
