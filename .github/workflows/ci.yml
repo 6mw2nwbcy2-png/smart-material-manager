@@ -71,10 +71,14 @@ jobs:
           assert not at.exception, at.exception
           page_text = '\n'.join(str(x.value) for x in at.markdown)
           assert '협력사 석재 발주서' in page_text, page_text
+          assert '등록된 협력사가 있는 석재 품목이 있어야' not in page_text, page_text
+          assert '신규 석재 품목 추가' not in page_text, page_text
+          assert '예산 / 기존 품목 저장' not in page_text, page_text
+          assert '협력사 석재 품목 등록' not in page_text, page_text
           labels = [getattr(x, 'label', '') for x in at.text_input]
           assert '협력사명' in labels, labels
 
-          # 2) Seed one disposable stone order so admin approval/delete widgets can render.
+          # 2) Seed a disposable order so admin approval/delete widgets can be tested.
           db = Path('material_manager_v11.db')
           with sqlite3.connect(db) as c:
               item = c.execute("SELECT id FROM budget_items WHERE category='석재' AND active=1 ORDER BY id LIMIT 1").fetchone()
@@ -95,7 +99,7 @@ jobs:
               )
               c.commit()
 
-          # 3) Admin: status + delete controls must render on stone page.
+          # 3) Admin: approval/status/delete controls must render on stone page.
           at.session_state['is_admin'] = True
           at.sidebar.radio[0].set_value('석재')
           at.run()
@@ -106,7 +110,7 @@ jobs:
           assert '상태 저장' in button_labels, button_labels
           assert '발주서 삭제' in button_labels, button_labels
 
-          # 4) Admin item management must render without an exception.
+          # 4) Admin item management must render and remain centralized.
           at.sidebar.radio[0].set_value('관리자 설정')
           at.run()
           assert not at.exception, at.exception
