@@ -15,7 +15,7 @@ source = source.replace(
     1,
 )
 
-# 석재 라우팅도 중앙 DB 전용 구현이 아니라 안정화된 SQLite 호환 페이지로 전환.
+# 석재 메뉴는 PostgreSQL 전용 구현을 절대 호출하지 않고 안정화 페이지로 우회.
 source = source.replace(
     'runpy.run_path("pages/stone_impl.py", run_name="__main__")',
     'runpy.run_path("pages/4_Stone.py", run_name="__main__")',
