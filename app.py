@@ -15,6 +15,16 @@ source = source.replace(
     1,
 )
 
+# 석재 라우팅도 중앙 DB 전용 구현이 아니라 안정화된 SQLite 호환 페이지로 전환.
+source = source.replace(
+    'runpy.run_path("pages/stone_impl.py", run_name="__main__")',
+    'runpy.run_path("pages/4_Stone.py", run_name="__main__")',
+)
+source = source.replace(
+    'runpy.run_path("pages/stone_impl_v2.py", run_name="__main__")',
+    'runpy.run_path("pages/4_Stone.py", run_name="__main__")',
+)
+
 source = source.replace(
     'st.caption("☁ 중앙 DB 연결" if USE_POSTGRES else "💻 로컬 SQLite 모드")',
     'st.caption("🛡 안정화 모드 · 백업 DB")\nst.info("현재 사이트 안정화를 위해 백업 DB 모드로 운영 중입니다. 중앙 DB 재연결은 별도 검증 후 적용합니다.")',
