@@ -38,6 +38,7 @@ jobs:
               '협력사 석재 발주서',
               'stone_order_form_v3',
               'stone_order_attachments_v3',
+              'pdf","xls","xlsx","dwg","dxf',
               '발주서 삭제',
               '결재 완료',
           ]
@@ -57,12 +58,14 @@ jobs:
       - name: Streamlit smoke test
         run: |
           python - <<'PY'
+          import sqlite3
+          from pathlib import Path
           from streamlit.testing.v1 import AppTest
 
           at = AppTest.from_file('app.py', default_timeout=30).run()
           assert not at.exception, at.exception
 
-          # Stone page must render for a normal user even when budget item vendor is blank.
+          # 1) Normal user: stone order form must render even when item vendor is blank.
           at.sidebar.radio[0].set_value('석재')
           at.run()
           assert not at.exception, at.exception
@@ -71,12 +74,44 @@ jobs:
           labels = [getattr(x, 'label', '') for x in at.text_input]
           assert '협력사명' in labels, labels
 
-          # Admin item management must render without an exception.
+          # 2) Seed one disposable stone order so admin approval/delete widgets can render.
+          db = Path('material_manager_v11.db')
+          with sqlite3.connect(db) as c:
+              item = c.execute("SELECT id FROM budget_items WHERE category='석재' AND active=1 ORDER BY id LIMIT 1").fetchone()
+              assert item, 'no stone item after stone page bootstrap'
+              item_id = int(item[0])
+              c.execute("DELETE FROM order_attachments WHERE order_id IN (SELECT id FROM orders WHERE order_no='CI-STONE-001')")
+              c.execute("DELETE FROM order_lines WHERE order_id IN (SELECT id FROM orders WHERE order_no='CI-STONE-001')")
+              c.execute("DELETE FROM transactions WHERE note LIKE '%CI-STONE-001%'")
+              c.execute("DELETE FROM orders WHERE order_no='CI-STONE-001'")
+              cur = c.execute(
+                  "INSERT INTO orders(order_no,category,vendor,order_date,partner_confirm,internal_approval,order_complete,note) VALUES(?,?,?,?,0,0,0,?)",
+                  ('CI-STONE-001','석재','CI협력사','2026-08-31','CI test'),
+              )
+              oid = int(cur.lastrowid)
+              c.execute(
+                  "INSERT INTO order_lines(order_id,item_id,qty,requested_delivery_date,destination,delivery_recipient,delivery_phone,delivery_address) VALUES(?,?,?,?,?,?,?,?)",
+                  (oid,item_id,1.0,'2026-09-01','현장','테스터','010-0000-0000','테스트주소'),
+              )
+              c.commit()
+
+          # 3) Admin: status + delete controls must render on stone page.
           at.session_state['is_admin'] = True
+          at.sidebar.radio[0].set_value('석재')
+          at.run()
+          assert not at.exception, at.exception
+          admin_stone_text = '\n'.join(str(x.value) for x in at.markdown)
+          assert '관리자 결재 / 발주 관리' in admin_stone_text, admin_stone_text
+          button_labels = [getattr(x, 'label', '') for x in at.button]
+          assert '상태 저장' in button_labels, button_labels
+          assert '발주서 삭제' in button_labels, button_labels
+
+          # 4) Admin item management must render without an exception.
           at.sidebar.radio[0].set_value('관리자 설정')
           at.run()
           assert not at.exception, at.exception
           admin_text = '\n'.join(str(x.value) for x in at.markdown)
           assert '예산 / 품목 관리' in admin_text, admin_text
+
           print('streamlit smoke test ok')
           PY
