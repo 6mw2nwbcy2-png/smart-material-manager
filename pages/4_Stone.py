@@ -1,6 +1,8 @@
 """Stable stone entrypoint.
-Restores the original feature-rich stone order UI while keeping PostgreSQL calls out
-of the deployed backup/stabilization runtime.
+
+Uses the original feature-rich stone implementation but removes the PostgreSQL-only
+bootstrap during stabilization. The stone page keeps ordering, PDF generation,
+attachments, recent-order review and admin approval/delete controls.
 """
 from pathlib import Path
 
@@ -90,42 +92,236 @@ def ensure_schema():
         c.commit()
 
 '''
-
 source = source[:start] + sqlite_bootstrap + source[end:]
 
-# 2) Stone page should NOT contain separate admin budget/new-item forms.
-admin_start_marker = '# --------------------------------------------------\n# 관리자: 예산 / 품목 관리\n# --------------------------------------------------'
+# 2) Items/budget are managed only in the global 관리자 설정 screen.
+admin_start_marker = '''# --------------------------------------------------
+# 관리자: 예산 / 품목 관리
+# --------------------------------------------------'''
 admin_end_marker = 'st.markdown("---")\nst.markdown("### 석재 현황")'
 a = source.find(admin_start_marker)
 b = source.find(admin_end_marker)
 if a >= 0 and b > a:
     source = source[:a] + source[b:]
 
-# 3) Remove the old partner item-registration form entirely.
-partner_start_marker = '# --------------------------------------------------\n# 협력사 품목 등록: 폼 제출 전에는 아무것도 DB에 저장하지 않음\n# --------------------------------------------------'
-partner_end_marker = '# --------------------------------------------------\n# 투입내역: 입력 중에는 저장하지 않고 \'저장\' 시에만 DB 반영\n# --------------------------------------------------'
+# Remove the old partner item-registration form.
+partner_start_marker = '''# --------------------------------------------------
+# 협력사 품목 등록: 폼 제출 전에는 아무것도 DB에 저장하지 않음
+# --------------------------------------------------'''
+partner_end_marker = '''# --------------------------------------------------
+# 투입내역: 입력 중에는 저장하지 않고 '저장' 시에만 DB 반영
+# --------------------------------------------------'''
 a = source.find(partner_start_marker)
 b = source.find(partner_end_marker)
 if a >= 0 and b > a:
     source = source[:a] + source[b:]
 
-# 4) Rename the actual order form to the requested partner stone order form.
-source = source.replace('st.markdown("### 석재 발주서 작성")', 'st.markdown("### 협력사 석재 발주서")', 1)
-source = source.replace(
-    'st.info("품목·납품정보·발주 비고·도해도를 모두 입력한 뒤 마지막 저장 버튼을 눌러주세요.")',
-    'st.info("협력사·품목·납품정보·발주 비고·도해도/첨부파일을 모두 입력한 뒤 마지막 저장 버튼을 눌러주세요.")',
-    1,
-)
-source = source.replace(
-    'st.caption("도해도, PDF, DWG, DXF, 이미지 등을 여러 개 첨부할 수 있습니다.")',
-    'st.caption("도해도와 PDF, Excel(XLS/XLSX), CAD(DWG/DXF), 이미지 등 여러 파일을 한 번에 첨부할 수 있습니다.")',
-    1,
-)
-source = source.replace(
-    'attachments = st.file_uploader("도해도 및 첨부파일 선택", accept_multiple_files=True, key="stone_order_attachments_v2")',
-    'attachments = st.file_uploader("도해도 및 첨부파일 선택", type=["pdf","xls","xlsx","dwg","dxf","png","jpg","jpeg","webp","bmp","tif","tiff"], accept_multiple_files=True, key="stone_order_attachments_v2")',
-    1,
+# 3) Replace the old vendor-dependent order block with a free-text vendor order form.
+order_start = source.find('st.markdown("### 석재 발주서 작성")')
+order_end = source.find('if st.session_state.get("stone_last_pdf"):', order_start)
+order_block = r'''st.markdown("### 협력사 석재 발주서")
+st.info("협력사명과 발주수량을 입력하고, 납품정보 및 도해도/첨부파일을 추가한 뒤 마지막 저장 버튼을 눌러주세요.")
+
+if len(df):
+    with st.form("stone_order_form_v3"):
+        vendor = st.text_input("협력사명", placeholder="예: ○○석재")
+
+        req = df[["id","item_name","spec","stone_type","unit","budget_qty","ordered"]].copy()
+        req.columns = ["id","품명","규격","석재구분","단위","예산","누적발주"]
+        req["발주수량"] = 0.0
+        req["납품요청일"] = date.today()
+
+        st.markdown("#### 품목 선택")
+        req_edit = st.data_editor(
+            req,
+            use_container_width=True,
+            hide_index=True,
+            disabled=["id","품명","규격","석재구분","단위","예산","누적발주"],
+            column_config={
+                "id": None,
+                "발주수량": st.column_config.NumberColumn("발주수량", min_value=0.0, step=0.1),
+                "납품요청일": st.column_config.DateColumn("납품요청일", format="YYYY-MM-DD"),
+            },
+            key="stone_multi_order_v3",
+        )
+
+        st.markdown("#### 납품 정보")
+        delivery_type = st.radio("납품구분", ["현장","기타"], horizontal=True, key="stone_delivery_type_v3")
+        d1, d2 = st.columns(2)
+        delivery_recipient = d1.text_input("받는 사람")
+        delivery_phone = d2.text_input("연락처")
+
+        site_address_df = read("SELECT value FROM settings WHERE key='site_address'")
+        default_site_address = str(site_address_df.iloc[0]["value"]) if len(site_address_df) else ""
+        if delivery_type == "현장":
+            delivery_address = st.text_input("현장 주소", value=default_site_address)
+        else:
+            delivery_address = st.text_input("납품 주소")
+
+        c1, c2 = st.columns(2)
+        order_date = c1.date_input("발주일", date.today())
+        order_note = c2.text_input("발주 비고")
+
+        st.markdown("#### 도해도 / 첨부파일")
+        st.caption("PDF, Excel(XLS/XLSX), CAD(DWG/DXF), 이미지 파일을 여러 개 동시에 첨부할 수 있습니다.")
+        attachments = st.file_uploader(
+            "도해도 및 첨부파일 선택",
+            type=["pdf","xls","xlsx","dwg","dxf","png","jpg","jpeg","webp","bmp","tif","tiff"],
+            accept_multiple_files=True,
+            key="stone_order_attachments_v3",
+        )
+
+        save_order = st.form_submit_button("선택 품목 일괄 발주 + PDF 생성", type="primary")
+
+    if save_order:
+        selected = req_edit[req_edit["발주수량"] > 0].copy()
+        if not vendor.strip():
+            st.warning("협력사명을 입력해주세요.")
+        elif not len(selected):
+            st.warning("발주수량을 입력한 품목이 없습니다.")
+        elif not delivery_recipient.strip() or not delivery_phone.strip() or not delivery_address.strip():
+            st.warning("받는 사람·연락처·납품 주소를 모두 입력해주세요.")
+        else:
+            order_no = next_order_no(order_date)
+            execute(
+                "INSERT INTO orders(order_no,category,vendor,order_date,partner_confirm,internal_approval,order_complete,note) VALUES(?,?,?,?,0,0,0,?)",
+                (order_no, CATEGORY, vendor.strip(), str(order_date), order_note.strip()),
+            )
+            oid = int(read("SELECT id FROM orders WHERE order_no=?", (order_no,)).iloc[0]["id"])
+
+            for _, r in selected.iterrows():
+                item_id = int(r["id"])
+                qty = float(r["발주수량"])
+                delivery_date = pd.to_datetime(r["납품요청일"]).date().isoformat()
+                execute(
+                    """INSERT INTO order_lines(
+                           order_id,item_id,qty,requested_delivery_date,destination,
+                           delivery_recipient,delivery_phone,delivery_address)
+                       VALUES(?,?,?,?,?,?,?,?)""",
+                    (oid,item_id,qty,delivery_date,delivery_type,delivery_recipient.strip(),delivery_phone.strip(),delivery_address.strip()),
+                )
+                execute(
+                    "INSERT INTO transactions(tx_date,item_id,tx_type,qty,destination,note,input_user) VALUES(?,?,?,?,?,?,?)",
+                    (str(order_date),item_id,"발주",qty,delivery_type,f"발주서 {order_no}",vendor.strip()),
+                )
+
+            save_attachments(oid, attachments)
+            lines = read(
+                """SELECT b.item_name,b.spec,b.unit,b.tile_type AS stone_type,
+                          ol.qty,ol.destination,ol.requested_delivery_date,
+                          ol.delivery_recipient,ol.delivery_phone,ol.delivery_address
+                   FROM order_lines ol JOIN budget_items b ON ol.item_id=b.id
+                   WHERE ol.order_id=? ORDER BY ol.requested_delivery_date,ol.id""",
+                (oid,),
+            )
+            order_row = read("SELECT * FROM orders WHERE id=?", (oid,)).iloc[0]
+            st.session_state["stone_last_pdf"] = make_pdf(order_row, lines)
+            st.session_state["stone_last_pdf_name"] = f"{order_no}_석재발주서.pdf"
+            st.success(f"{len(selected)}개 품목 발주 완료 / 첨부 {len(attachments or [])}개")
+            st.rerun()
+else:
+    st.warning("등록된 석재 품목이 없습니다. 관리자가 '관리자 설정 → 예산 / 품목 관리'에서 석재 품목을 먼저 등록해주세요.")
+
+'''
+if order_start >= 0 and order_end > order_start:
+    source = source[:order_start] + order_block + source[order_end:]
+
+# 4) Replace recent-order view with admin approval/status/delete controls.
+recent_start = source.find('st.markdown("### 최근 석재 발주 / 도해도")')
+if recent_start >= 0:
+    recent_block = r'''st.markdown("### 최근 석재 발주 / 도해도")
+recent = read(
+    "SELECT id,order_no,vendor,order_date,partner_confirm,internal_approval,order_complete,note FROM orders WHERE category=? ORDER BY id DESC LIMIT 50",
+    (CATEGORY,),
 )
 
-source = source.replace('st.caption("☁ 중앙 DB 연결")', 'st.caption("🛡 안정화 모드 · 석재 발주 기능 복구")', 1)
+if not len(recent):
+    st.info("등록된 석재 발주가 없습니다.")
+else:
+    for _, order in recent.iterrows():
+        status = (
+            "발주완료" if int(order["order_complete"] or 0)
+            else "결재완료" if int(order["internal_approval"] or 0)
+            else "협력사 확인완료" if int(order["partner_confirm"] or 0)
+            else "결재/확인중"
+        )
+        with st.expander(f"{order['order_no']} · {order['vendor']} · {order['order_date']} · {status}"):
+            lines = read(
+                """SELECT b.item_name,b.spec,b.unit,b.tile_type AS stone_type,
+                          ol.qty,ol.requested_delivery_date,ol.destination,
+                          ol.delivery_recipient,ol.delivery_phone,ol.delivery_address
+                   FROM order_lines ol JOIN budget_items b ON ol.item_id=b.id
+                   WHERE ol.order_id=? ORDER BY ol.id""",
+                (int(order["id"]),),
+            )
+            if len(lines):
+                show = lines[["stone_type","item_name","spec","qty","unit","requested_delivery_date"]].copy()
+                show.columns = ["석재구분","품명","규격","수량","단위","납품요청일"]
+                st.dataframe(show, use_container_width=True, hide_index=True)
+                first = lines.iloc[0]
+                st.caption(
+                    f"납품구분: {first.get('destination','')} | 받는 사람: {first.get('delivery_recipient','')} | "
+                    f"연락처: {first.get('delivery_phone','')} | 주소: {first.get('delivery_address','')}"
+                )
+
+            at = read(
+                "SELECT id,file_name,mime_type,file_size,file_data,created_at FROM order_attachments WHERE order_id=? ORDER BY id",
+                (int(order["id"]),),
+            )
+            if len(at):
+                st.write(f"첨부파일 {len(at)}개")
+                for _, a in at.iterrows():
+                    raw = a["file_data"]
+                    if hasattr(raw, "tobytes"):
+                        raw = raw.tobytes()
+                    elif isinstance(raw, memoryview):
+                        raw = raw.tobytes()
+                    elif not isinstance(raw, bytes):
+                        raw = bytes(raw)
+                    st.download_button(
+                        f"📎 {a['file_name']}", data=raw, file_name=a["file_name"],
+                        mime=str(a["mime_type"] or "application/octet-stream"),
+                        key=f"stone_attach_v3_{int(a['id'])}",
+                    )
+            else:
+                st.caption("첨부된 도해도/파일이 없습니다.")
+
+            if is_admin():
+                st.markdown("#### 관리자 결재 / 발주 관리")
+                s1, s2, s3 = st.columns(3)
+                partner_confirm = s1.checkbox("협력사 확인", value=bool(order["partner_confirm"]), key=f"stone_partner_confirm_{int(order['id'])}")
+                internal_approval = s2.checkbox("결재 완료", value=bool(order["internal_approval"]), key=f"stone_internal_approval_{int(order['id'])}")
+                order_complete = s3.checkbox("발주 완료", value=bool(order["order_complete"]), key=f"stone_order_complete_{int(order['id'])}")
+
+                c1, c2 = st.columns(2)
+                if c1.button("상태 저장", key=f"stone_status_save_{int(order['id'])}", type="primary"):
+                    execute(
+                        "UPDATE orders SET partner_confirm=?, internal_approval=?, order_complete=? WHERE id=?",
+                        (int(partner_confirm),int(internal_approval),int(order_complete),int(order["id"])),
+                    )
+                    st.success("발주서 상태를 저장했습니다.")
+                    st.rerun()
+
+                confirm_delete = c2.checkbox("삭제 확인", key=f"stone_delete_confirm_{int(order['id'])}")
+                if c2.button("발주서 삭제", key=f"stone_delete_{int(order['id'])}"):
+                    if not confirm_delete:
+                        st.warning("삭제 확인을 먼저 체크해주세요.")
+                    else:
+                        oid = int(order["id"])
+                        order_no = str(order["order_no"])
+                        execute("DELETE FROM order_attachments WHERE order_id=?", (oid,))
+                        execute("DELETE FROM order_lines WHERE order_id=?", (oid,))
+                        execute("DELETE FROM transactions WHERE tx_type='발주' AND note LIKE ?", (f"%{order_no}%",))
+                        execute("DELETE FROM orders WHERE id=?", (oid,))
+                        st.success(f"{order_no} 발주서를 삭제했습니다.")
+                        st.rerun()
+            else:
+                st.caption("결재 상태 변경 및 발주서 삭제는 관리자만 가능합니다.")
+'''
+    source = source[:recent_start] + recent_block
+
+# Korean PDF font used by the stone order PDF.
+source = source.replace('UnicodeCIDFont("HYSMyeongJo-Medium")', 'UnicodeCIDFont("HYSMyeongJoStd-Medium")')
+source = source.replace('st.caption("☁ 중앙 DB 연결")', 'st.caption("🛡 안정화 모드 · 석재 발주 기능")', 1)
+
 exec(compile(source, str(SRC), "exec"), globals(), globals())
