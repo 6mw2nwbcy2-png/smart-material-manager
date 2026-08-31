@@ -1,0 +1,35 @@
+name: Deployed App Health
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  health:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Wait for Streamlit deployment
+        run: sleep 45
+
+      - name: Check deployed app 5 times
+        env:
+          APP_URL: https://d8fygpeejbjqgneyf8zw2x.streamlit.app
+        run: |
+          set -euo pipefail
+          for i in 1 2 3 4 5; do
+            echo "Remote check $i/5"
+            code=$(curl -L --connect-timeout 15 --max-time 30 -sS -o /tmp/app.html -w '%{http_code}' "$APP_URL/")
+            test "$code" = "200"
+            grep -qi 'streamlit' /tmp/app.html
+
+            health=$(curl -L --connect-timeout 15 --max-time 30 -sS "$APP_URL/_stcore/health")
+            echo "health=$health"
+            echo "$health" | grep -Eqi 'ok|healthy'
+            sleep 5
+          done
+          echo 'deployed Streamlit app passed 5 remote checks'
