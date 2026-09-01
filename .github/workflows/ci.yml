@@ -28,12 +28,13 @@ jobs:
         run: |
           python -m py_compile app.py app_snapshot.py pages/4_Stone.py pages/stone_impl.py pages/stone_impl_v2.py
 
-      - name: Verify stone stabilization markers
+      - name: Verify stabilization markers
         run: |
           python - <<'PY'
           from pathlib import Path
           wrapper = Path('pages/4_Stone.py').read_text(encoding='utf-8')
           base = Path('pages/stone_impl_v2.py').read_text(encoding='utf-8')
+          app = Path('app.py').read_text(encoding='utf-8')
           required_wrapper = [
               '협력사 석재 발주서',
               'stone_order_form_v3',
@@ -48,11 +49,21 @@ jobs:
               '### 석재 발주서 작성',
               '### 최근 석재 발주 / 도해도',
           ]
+          required_app = [
+              '### 저장된 발주서 관리 / 삭제',
+              'admin_saved_order_delete_editor_v1',
+              '선택 발주서 삭제',
+              'DELETE FROM order_lines WHERE order_id=?',
+              "DELETE FROM transactions WHERE tx_type='발주' AND note LIKE ?",
+              'DELETE FROM orders WHERE id=?',
+          ]
           for marker in required_wrapper:
               assert marker in wrapper, f'missing wrapper marker: {marker}'
           for marker in required_base:
               assert marker in base, f'missing base marker: {marker}'
-          print('stone markers ok')
+          for marker in required_app:
+              assert marker in app, f'missing app marker: {marker}'
+          print('stabilization markers ok')
           PY
 
       - name: Streamlit smoke test
@@ -97,6 +108,10 @@ jobs:
                   "INSERT INTO order_lines(order_id,item_id,qty,requested_delivery_date,destination,delivery_recipient,delivery_phone,delivery_address) VALUES(?,?,?,?,?,?,?,?)",
                   (oid,item_id,1.0,'2026-09-01','현장','테스터','010-0000-0000','테스트주소'),
               )
+              c.execute(
+                  "INSERT INTO transactions(tx_date,item_id,tx_type,qty,destination,note,input_user) VALUES(?,?,?,?,?,?,?)",
+                  ('2026-08-31',item_id,'발주',1.0,'현장','발주서 CI-STONE-001','CI'),
+              )
               c.commit()
 
           # 3) Admin: approval/status/delete controls must render on stone page.
@@ -110,12 +125,15 @@ jobs:
           assert '상태 저장' in button_labels, button_labels
           assert '발주서 삭제' in button_labels, button_labels
 
-          # 4) Admin item management must render and remain centralized.
+          # 4) Admin settings: centralized item management + saved order deletion must render.
           at.sidebar.radio[0].set_value('관리자 설정')
           at.run()
           assert not at.exception, at.exception
           admin_text = '\n'.join(str(x.value) for x in at.markdown)
           assert '예산 / 품목 관리' in admin_text, admin_text
+          assert '저장된 발주서 관리 / 삭제' in admin_text, admin_text
+          admin_button_labels = [getattr(x, 'label', '') for x in at.button]
+          assert '선택 발주서 삭제' in admin_button_labels, admin_button_labels
 
           print('streamlit smoke test ok')
           PY
