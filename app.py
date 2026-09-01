@@ -142,6 +142,83 @@ if pos >= 0:
                 st.rerun()
 
         st.markdown("---")
+        st.markdown("### 저장된 발주서 관리 / 삭제")
+        st.caption("철근·레미콘·타일·석재 발주서를 한곳에서 확인하고 여러 건을 선택해 삭제할 수 있습니다. 삭제하면 해당 발주 품목·첨부파일·발주 누계도 함께 제거됩니다.")
+
+        admin_orders = read(
+            """SELECT o.id,o.order_no,o.category,o.vendor,o.order_date,
+                      o.partner_confirm,o.internal_approval,o.order_complete,
+                      (SELECT COUNT(*) FROM order_lines ol WHERE ol.order_id=o.id) AS item_count
+               FROM orders o
+               ORDER BY o.id DESC"""
+        )
+
+        if not len(admin_orders):
+            st.info("저장된 발주서가 없습니다.")
+        else:
+            order_manage = admin_orders.copy()
+            order_manage["상태"] = order_manage.apply(
+                lambda r: "발주완료" if int(r["order_complete"] or 0)
+                else "결재완료" if int(r["internal_approval"] or 0)
+                else "협력사 확인완료" if int(r["partner_confirm"] or 0)
+                else "결재/확인중",
+                axis=1,
+            )
+            order_manage = order_manage[["id","order_no","category","vendor","order_date","item_count","상태"]]
+            order_manage.columns = ["id","발주번호","공종","협력사","발주일","품목수","상태"]
+            order_manage["삭제"] = False
+
+            delete_edit = st.data_editor(
+                order_manage,
+                use_container_width=True,
+                hide_index=True,
+                disabled=["id","발주번호","공종","협력사","발주일","품목수","상태"],
+                column_config={
+                    "id": None,
+                    "삭제": st.column_config.CheckboxColumn("삭제 선택", default=False),
+                },
+                key="admin_saved_order_delete_editor_v1",
+            )
+
+            selected_orders = delete_edit[delete_edit["삭제"] == True].copy()
+            if len(selected_orders):
+                st.caption(f"삭제 선택: {len(selected_orders)}건")
+
+            confirm_order_delete = st.checkbox(
+                "선택한 발주서를 실제로 삭제합니다.",
+                key="admin_saved_order_delete_confirm_v1",
+            )
+
+            if st.button("선택 발주서 삭제", key="admin_saved_order_delete_button_v1"):
+                if not len(selected_orders):
+                    st.warning("삭제할 발주서를 먼저 선택해주세요.")
+                elif not confirm_order_delete:
+                    st.warning("삭제 확인을 체크해주세요.")
+                else:
+                    deleted_count = 0
+                    with sqlite3.connect(DB) as c:
+                        existing_tables = {
+                            row[0]
+                            for row in c.execute("SELECT name FROM sqlite_master WHERE type='table'").fetchall()
+                        }
+                        for _, order_row in selected_orders.iterrows():
+                            oid = int(order_row["id"])
+                            order_no = str(order_row["발주번호"])
+                            if "order_attachments" in existing_tables:
+                                c.execute("DELETE FROM order_attachments WHERE order_id=?", (oid,))
+                            c.execute("DELETE FROM order_lines WHERE order_id=?", (oid,))
+                            c.execute(
+                                "DELETE FROM transactions WHERE tx_type='발주' AND note LIKE ?",
+                                (f"%{order_no}%",),
+                            )
+                            c.execute("DELETE FROM orders WHERE id=?", (oid,))
+                            deleted_count += 1
+                        c.commit()
+
+                    st.success(f"선택한 발주서 {deleted_count}건을 삭제했습니다.")
+                    st.rerun()
+
+        st.markdown("---")
         st.markdown("### 관리자 비밀번호 변경")
         p1 = st.text_input("새 비밀번호", type="password", key="admin_pw1_v3")
         p2 = st.text_input("새 비밀번호 확인", type="password", key="admin_pw2_v3")
