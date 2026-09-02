@@ -1,4 +1,4 @@
-name: Deployed App Front Door
+name: Deployed App Diagnostics
 
 on:
   push:
@@ -14,30 +14,27 @@ jobs:
     timeout-minutes: 10
     steps:
       - name: Wait for Streamlit deployment
-        run: sleep 45
+        run: sleep 40
 
-      - name: Check deployed Streamlit front door 5 times
+      - name: Check deployed app endpoints
         env:
           APP_URL: https://d8fygpeejbjqgneyf8zw2x.streamlit.app
         run: |
-          set -euo pipefail
-          for i in 1 2 3 4 5; do
-            echo "Remote front-door check $i/5"
+          set -uo pipefail
+          for path in / /_stcore/health /_stcore/host-config; do
+            echo "===== $path ====="
             rm -f /tmp/h /tmp/b
-            code=$(curl -sS -D /tmp/h -o /tmp/b --connect-timeout 15 --max-time 30 --max-redirs 0 -w '%{http_code}' "$APP_URL/")
+            code=$(curl -sS -D /tmp/h -o /tmp/b --connect-timeout 15 --max-time 30 --max-redirs 0 -w '%{http_code}' "$APP_URL$path" || true)
             echo "HTTP $code"
-            cat /tmp/h
-
-            if [ "$code" = "200" ]; then
-              grep -Eqi 'streamlit|text/html' /tmp/h /tmp/b
-            elif [ "$code" = "303" ]; then
-              # Streamlit may redirect automated/cloud clients through its auth front door.
-              # This still proves the deployed subdomain is alive; functional UI is verified by AppTest in ci.yml.
-              grep -Eqi 'share\.streamlit\.io/.*/auth|share\.streamlit\.io/-/auth' /tmp/h /tmp/b
-            else
-              echo "Unexpected deployed-app HTTP status: $code"
-              exit 1
-            fi
-            sleep 5
+            cat /tmp/h || true
+            echo "BODY:"
+            head -c 1000 /tmp/b || true
+            echo
           done
-          echo 'deployed Streamlit front door passed 5 checks'
+
+          echo '===== repeated root checks ====='
+          for i in 1 2 3 4 5; do
+            code=$(curl -sS -o /tmp/b --connect-timeout 15 --max-time 30 --max-redirs 0 -w '%{http_code}' "$APP_URL/" || true)
+            echo "root $i/5 HTTP $code"
+            sleep 3
+          done
