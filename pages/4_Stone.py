@@ -1,9 +1,11 @@
 """Stone production wrapper.
 
-- Production uses the central PostgreSQL DATABASE_URL only.
-- SQLite is allowed only when CI_LOCAL_DB=1 for automated tests.
-- Keeps the feature-rich stone order UI and attachments.
-- Deletes are soft-deletes so order data and attachments are never physically lost.
+Production behavior
+- Uses central PostgreSQL in Streamlit Cloud.
+- Uses SQLite only when CI_LOCAL_DB=1 in automated tests.
+- Uses a bounded PostgreSQL connection pool to avoid connection exhaustion.
+- Keeps stone ordering, PDF generation and PDF/Excel/CAD/image attachments.
+- Order deletion is a recoverable soft-delete; files and order lines stay preserved.
 """
 from pathlib import Path
 
@@ -11,7 +13,7 @@ SRC = Path(__file__).with_name("stone_impl_v2.py")
 source = SRC.read_text(encoding="utf-8")
 
 # -----------------------------------------------------------------------------
-# CENTRAL DB bootstrap with retry. CI may explicitly use local SQLite.
+# Central DB bootstrap with bounded pool
 # -----------------------------------------------------------------------------
 start = source.index("DATABASE_URL = get_database_url()")
 end = source.index("def seed_stone_items():")
@@ -24,13 +26,26 @@ if not USE_POSTGRES and not CI_LOCAL_DB:
     st.error("중앙 DB에 연결되지 않았습니다. 데이터 보호를 위해 로컬 DB로 임의 전환하지 않습니다.")
     st.stop()
 
+if USE_POSTGRES:
+    from psycopg2.pool import ThreadedConnectionPool
 
-def db_connect():
+_DB_POOL = None
+
+
+def _get_db_pool():
+    global _DB_POOL
+    if not USE_POSTGRES:
+        return None
+    if _DB_POOL is not None:
+        return _DB_POOL
+
     import time as _time
     last_error = None
     for attempt in range(5):
         try:
-            return psycopg2.connect(
+            _DB_POOL = ThreadedConnectionPool(
+                1,
+                3,
                 dsn=DATABASE_URL,
                 connect_timeout=10,
                 application_name="smart-material-manager-stone",
@@ -39,11 +54,37 @@ def db_connect():
                 keepalives_interval=10,
                 keepalives_count=3,
             )
+            return _DB_POOL
         except psycopg2.OperationalError as exc:
             last_error = exc
             if attempt < 4:
                 _time.sleep(1 + attempt)
     raise last_error
+
+
+class _DBSession:
+    def __enter__(self):
+        self.pool = _get_db_pool()
+        self.conn = self.pool.getconn()
+        return self.conn
+
+    def __exit__(self, exc_type, exc, tb):
+        close_conn = False
+        try:
+            if exc_type is not None:
+                try:
+                    self.conn.rollback()
+                except Exception:
+                    close_conn = True
+            if getattr(self.conn, "closed", 0):
+                close_conn = True
+        finally:
+            self.pool.putconn(self.conn, close=close_conn)
+        return False
+
+
+def db_connect():
+    return _DBSession()
 
 
 def _pg_sql(sql):
@@ -53,9 +94,13 @@ def _pg_sql(sql):
 def execute(sql, params=()):
     if USE_POSTGRES:
         with db_connect() as c:
-            with c.cursor() as cur:
-                cur.execute(_pg_sql(sql), params)
-            c.commit()
+            try:
+                with c.cursor() as cur:
+                    cur.execute(_pg_sql(sql), params)
+                c.commit()
+            except Exception:
+                c.rollback()
+                raise
     else:
         with sqlite3.connect(DB) as c:
             c.execute(sql, params)
@@ -73,42 +118,46 @@ def read(sql, params=()):
 def ensure_schema():
     if USE_POSTGRES:
         with db_connect() as c:
-            with c.cursor() as cur:
-                for name, definition in [
-                    ("delivery_recipient", "TEXT DEFAULT ''"),
-                    ("delivery_phone", "TEXT DEFAULT ''"),
-                    ("delivery_address", "TEXT DEFAULT ''"),
-                    ("storage_location", "TEXT DEFAULT ''"),
-                ]:
-                    cur.execute(f"ALTER TABLE order_lines ADD COLUMN IF NOT EXISTS {name} {definition}")
-                cur.execute("ALTER TABLE orders ADD COLUMN IF NOT EXISTS deleted_at TEXT DEFAULT ''")
-                cur.execute("ALTER TABLE orders ADD COLUMN IF NOT EXISTS deleted_by TEXT DEFAULT ''")
-                cur.execute("ALTER TABLE transactions ADD COLUMN IF NOT EXISTS deleted_at TEXT DEFAULT ''")
-                cur.execute("ALTER TABLE transactions ADD COLUMN IF NOT EXISTS deleted_by TEXT DEFAULT ''")
-                cur.execute("ALTER TABLE transactions ADD COLUMN IF NOT EXISTS order_id INTEGER")
-                cur.execute(
-                    """CREATE TABLE IF NOT EXISTS order_attachments(
-                        id SERIAL PRIMARY KEY,
-                        order_id INTEGER NOT NULL,
-                        file_name TEXT NOT NULL,
-                        mime_type TEXT DEFAULT '',
-                        file_size BIGINT DEFAULT 0,
-                        file_data BYTEA NOT NULL,
-                        created_at TEXT DEFAULT ''
-                    )"""
-                )
-                cur.execute(
-                    """CREATE TABLE IF NOT EXISTS data_change_log(
-                        id BIGSERIAL PRIMARY KEY,
-                        action TEXT NOT NULL,
-                        entity_type TEXT NOT NULL,
-                        entity_id TEXT DEFAULT '',
-                        detail TEXT DEFAULT '',
-                        changed_by TEXT DEFAULT '',
-                        created_at TIMESTAMPTZ DEFAULT NOW()
-                    )"""
-                )
-            c.commit()
+            try:
+                with c.cursor() as cur:
+                    for name, definition in [
+                        ("delivery_recipient", "TEXT DEFAULT ''"),
+                        ("delivery_phone", "TEXT DEFAULT ''"),
+                        ("delivery_address", "TEXT DEFAULT ''"),
+                        ("storage_location", "TEXT DEFAULT ''"),
+                    ]:
+                        cur.execute(f"ALTER TABLE order_lines ADD COLUMN IF NOT EXISTS {name} {definition}")
+                    cur.execute("ALTER TABLE orders ADD COLUMN IF NOT EXISTS deleted_at TEXT DEFAULT ''")
+                    cur.execute("ALTER TABLE orders ADD COLUMN IF NOT EXISTS deleted_by TEXT DEFAULT ''")
+                    cur.execute("ALTER TABLE transactions ADD COLUMN IF NOT EXISTS deleted_at TEXT DEFAULT ''")
+                    cur.execute("ALTER TABLE transactions ADD COLUMN IF NOT EXISTS deleted_by TEXT DEFAULT ''")
+                    cur.execute("ALTER TABLE transactions ADD COLUMN IF NOT EXISTS order_id INTEGER")
+                    cur.execute(
+                        """CREATE TABLE IF NOT EXISTS order_attachments(
+                            id SERIAL PRIMARY KEY,
+                            order_id INTEGER NOT NULL,
+                            file_name TEXT NOT NULL,
+                            mime_type TEXT DEFAULT '',
+                            file_size BIGINT DEFAULT 0,
+                            file_data BYTEA NOT NULL,
+                            created_at TEXT DEFAULT ''
+                        )"""
+                    )
+                    cur.execute(
+                        """CREATE TABLE IF NOT EXISTS data_change_log(
+                            id BIGSERIAL PRIMARY KEY,
+                            action TEXT NOT NULL,
+                            entity_type TEXT NOT NULL,
+                            entity_id TEXT DEFAULT '',
+                            detail TEXT DEFAULT '',
+                            changed_by TEXT DEFAULT '',
+                            created_at TIMESTAMPTZ DEFAULT NOW()
+                        )"""
+                    )
+                c.commit()
+            except Exception:
+                c.rollback()
+                raise
     else:
         with sqlite3.connect(DB) as c:
             c.execute("""CREATE TABLE IF NOT EXISTS budget_items(
@@ -189,11 +238,23 @@ def ensure_schema():
 def log_change(action, entity_type, entity_id="", detail="", changed_by="관리자"):
     execute(
         "INSERT INTO data_change_log(action,entity_type,entity_id,detail,changed_by) VALUES(?,?,?,?,?)",
-        (str(action),str(entity_type),str(entity_id),str(detail),str(changed_by)),
+        (str(action), str(entity_type), str(entity_id), str(detail), str(changed_by)),
     )
 
 '''
 source = source[:start] + central_bootstrap + source[end:]
+
+# Fail safely if the central DB is temporarily unreachable.
+source = source.replace(
+    "ensure_schema()\nseed_stone_items()",
+    r'''try:
+    ensure_schema()
+    seed_stone_items()
+except psycopg2.OperationalError:
+    st.error("중앙 DB 연결이 일시적으로 불안정합니다. 데이터 보호를 위해 로컬 저장으로 전환하지 않습니다.")
+    st.stop()''',
+    1,
+)
 
 # Deleted order transactions must not count in stone totals.
 source = source.replace(
@@ -201,7 +262,7 @@ source = source.replace(
     "LEFT JOIN transactions t ON b.id=t.item_id AND COALESCE(t.deleted_at,'')=''",
 )
 
-# Items/budget are managed only in global 관리자 설정.
+# Items/budget are managed only in the global 관리자 설정.
 admin_start_marker = '''# --------------------------------------------------
 # 관리자: 예산 / 품목 관리
 # --------------------------------------------------'''
@@ -223,7 +284,7 @@ b = source.find(partner_end_marker)
 if a >= 0 and b > a:
     source = source[:a] + source[b:]
 
-# Replace vendor-dependent order block with direct vendor input + multi-file attachments.
+# Direct vendor input + multi-file attachments.
 order_start = source.find('st.markdown("### 석재 발주서 작성")')
 order_end = source.find('if st.session_state.get("stone_last_pdf"):', order_start)
 order_block = r'''st.markdown("### 협력사 석재 발주서")
@@ -238,7 +299,7 @@ if len(df):
         req["납품요청일"] = date.today()
         st.markdown("#### 품목 선택")
         req_edit = st.data_editor(
-            req, use_container_width=True, hide_index=True,
+            req, width="stretch", hide_index=True,
             disabled=["id","품명","규격","석재구분","단위","예산","누적발주"],
             column_config={
                 "id": None,
@@ -319,7 +380,7 @@ else:
 if order_start >= 0 and order_end > order_start:
     source = source[:order_start] + order_block + source[order_end:]
 
-# Recent orders: approval + SOFT delete. Attachments/order lines stay intact forever.
+# Recent orders: approval + recoverable soft-delete.
 recent_start = source.find('st.markdown("### 최근 석재 발주 / 도해도")')
 if recent_start >= 0:
     recent_block = r'''st.markdown("### 최근 석재 발주 / 도해도")
@@ -349,7 +410,7 @@ else:
             if len(lines):
                 show = lines[["stone_type","item_name","spec","qty","unit","requested_delivery_date"]].copy()
                 show.columns = ["석재구분","품명","규격","수량","단위","납품요청일"]
-                st.dataframe(show, use_container_width=True, hide_index=True)
+                st.dataframe(show, width="stretch", hide_index=True)
                 first = lines.iloc[0]
                 st.caption(f"납품구분: {first.get('destination','')} | 받는 사람: {first.get('delivery_recipient','')} | 연락처: {first.get('delivery_phone','')} | 주소: {first.get('delivery_address','')}")
 
@@ -389,8 +450,21 @@ else:
                         oid = int(order["id"])
                         order_no = str(order["order_no"])
                         deleted_at = pd.Timestamp.now().isoformat()
-                        execute("UPDATE orders SET deleted_at=?,deleted_by=? WHERE id=?", (deleted_at,"관리자",oid))
-                        execute("UPDATE transactions SET deleted_at=?,deleted_by=? WHERE (order_id=? OR (tx_type='발주' AND note LIKE ?))", (deleted_at,"관리자",oid,f"%{order_no}%"))
+                        if USE_POSTGRES:
+                            with db_connect() as c:
+                                try:
+                                    with c.cursor() as cur:
+                                        cur.execute(_pg_sql("UPDATE orders SET deleted_at=?,deleted_by=? WHERE id=?"), (deleted_at,"관리자",oid))
+                                        cur.execute(_pg_sql("UPDATE transactions SET deleted_at=?,deleted_by=? WHERE (order_id=? OR (tx_type='발주' AND note LIKE ?))"), (deleted_at,"관리자",oid,f"%{order_no}%"))
+                                    c.commit()
+                                except Exception:
+                                    c.rollback()
+                                    raise
+                        else:
+                            with sqlite3.connect(DB) as c:
+                                c.execute("UPDATE orders SET deleted_at=?,deleted_by=? WHERE id=?", (deleted_at,"관리자",oid))
+                                c.execute("UPDATE transactions SET deleted_at=?,deleted_by=? WHERE (order_id=? OR (tx_type='발주' AND note LIKE ?))", (deleted_at,"관리자",oid,f"%{order_no}%"))
+                                c.commit()
                         log_change("SOFT_DELETE", "order", oid, f"order_no={order_no}")
                         st.success(f"{order_no} 발주서를 삭제 보관함으로 이동했습니다. 첨부/품목 데이터는 보존됩니다.")
                         st.rerun()
