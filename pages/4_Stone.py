@@ -12,7 +12,8 @@ source = SRC.read_text(encoding="utf-8")
 start = source.index("DATABASE_URL = get_database_url()")
 end = source.index("def seed_stone_items():")
 
-stable_bootstrap = '''from db_runtime import resolve_database_url as _resolve_database_url
+stable_bootstrap = '''from contextlib import closing
+from db_runtime import resolve_database_url as _resolve_database_url
 _DB_RESOLUTION = _resolve_database_url(get_database_url(), st.secrets)
 DATABASE_URL = _DB_RESOLUTION.url
 USE_POSTGRES = _DB_RESOLUTION.connected
@@ -29,7 +30,7 @@ def execute(sql, params=()):
     if not USE_POSTGRES:
         st.error("중앙 DB가 연결되지 않아 석재 저장/수정/삭제를 차단했습니다. 기존 데이터 보호를 위한 조회 전용 상태입니다.")
         st.stop()
-    with psycopg2.connect(DATABASE_URL, connect_timeout=7) as c:
+    with closing(psycopg2.connect(DATABASE_URL, connect_timeout=7, application_name="smart-material-manager")) as c:
         with c.cursor() as cur:
             cur.execute(_pg_sql(sql), params)
         c.commit()
@@ -37,7 +38,7 @@ def execute(sql, params=()):
 
 def read(sql, params=()):
     if USE_POSTGRES:
-        with psycopg2.connect(DATABASE_URL, connect_timeout=7) as c:
+        with closing(psycopg2.connect(DATABASE_URL, connect_timeout=7, application_name="smart-material-manager")) as c:
             return pd.read_sql_query(_pg_sql(sql), c, params=params)
     with sqlite3.connect(DB) as c:
         return pd.read_sql_query(sql, c, params=params)
@@ -71,7 +72,7 @@ def ensure_schema():
             file_name TEXT NOT NULL, mime_type TEXT DEFAULT '', file_size INTEGER DEFAULT 0,
             file_data BYTEA NOT NULL, created_at TEXT DEFAULT '')""",
     ]
-    with psycopg2.connect(DATABASE_URL, connect_timeout=7) as c:
+    with closing(psycopg2.connect(DATABASE_URL, connect_timeout=7, application_name="smart-material-manager")) as c:
         with c.cursor() as cur:
             for q in ddl:
                 cur.execute(q)
@@ -214,7 +215,7 @@ if order_start >= 0 and order_end > order_start:
 
 source = source.replace(
     'st.caption("☁ 중앙 DB 연결")',
-    'st.caption(("☁ 중앙 DB 연결" + (" · Pooler" if CENTRAL_DB_ENDPOINT == "pooler" else "")) if USE_POSTGRES else "🔒 중앙 DB 미연결 · 조회 전용")',
+    'st.caption(("☁ 중앙 DB 연결" + (" · Pooler" if str(CENTRAL_DB_ENDPOINT).startswith("pooler") else "")) if USE_POSTGRES else "🔒 중앙 DB 미연결 · 조회 전용")',
     1,
 )
 exec(compile(source, str(SRC), "exec"), globals(), globals())
