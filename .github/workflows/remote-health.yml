@@ -1,4 +1,4 @@
-name: Deployed App Diagnostics
+name: Public App Access Guard
 
 on:
   push:
@@ -9,32 +9,29 @@ permissions:
   contents: read
 
 jobs:
-  health:
+  public-access:
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
       - name: Wait for Streamlit deployment
-        run: sleep 40
+        run: sleep 45
 
-      - name: Check deployed app endpoints
+      - name: Verify public app access 5 times
         env:
           APP_URL: https://d8fygpeejbjqgneyf8zw2x.streamlit.app
         run: |
-          set -uo pipefail
-          for path in / /_stcore/health /_stcore/host-config; do
-            echo "===== $path ====="
-            rm -f /tmp/h /tmp/b
-            code=$(curl -sS -D /tmp/h -o /tmp/b --connect-timeout 15 --max-time 30 --max-redirs 0 -w '%{http_code}' "$APP_URL$path" || true)
-            echo "HTTP $code"
-            cat /tmp/h || true
-            echo "BODY:"
-            head -c 1000 /tmp/b || true
-            echo
-          done
-
-          echo '===== repeated root checks ====='
+          set -euo pipefail
           for i in 1 2 3 4 5; do
-            code=$(curl -sS -o /tmp/b --connect-timeout 15 --max-time 30 --max-redirs 0 -w '%{http_code}' "$APP_URL/" || true)
-            echo "root $i/5 HTTP $code"
-            sleep 3
+            echo "Public access check $i/5"
+            rm -f /tmp/h /tmp/b
+            code=$(curl -sS -D /tmp/h -o /tmp/b --connect-timeout 15 --max-time 30 --max-redirs 0 -w '%{http_code}' "$APP_URL/")
+            echo "HTTP $code"
+            if [ "$code" != "200" ]; then
+              cat /tmp/h
+              echo "ERROR: deployed app is not anonymously public (expected HTTP 200)."
+              exit 1
+            fi
+            grep -Eqi 'text/html|streamlit' /tmp/h /tmp/b
+            sleep 5
           done
+          echo 'public Streamlit app passed 5 anonymous-access checks'
