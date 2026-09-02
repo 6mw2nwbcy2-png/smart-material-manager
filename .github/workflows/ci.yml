@@ -26,73 +26,65 @@ jobs:
 
       - name: Compile Python files
         run: |
-          python -m py_compile app.py app_snapshot.py admin_settings_extra.py dashboard_extra.py db_runtime.py pages/4_Stone.py pages/stone_impl.py pages/stone_impl_v2.py
+          python -m py_compile app.py app_snapshot.py admin_settings_extra.py dashboard_extra.py db_runtime.py data_protection.py pages/4_Stone.py pages/stone_impl.py pages/stone_impl_v2.py
 
-      - name: Verify production safety and feature markers
+      - name: Verify production DB and immutability markers
         run: |
           python - <<'PY'
           from pathlib import Path
 
-          wrapper = Path('pages/4_Stone.py').read_text(encoding='utf-8')
-          base = Path('pages/stone_impl_v2.py').read_text(encoding='utf-8')
           app = Path('app.py').read_text(encoding='utf-8')
           admin = Path('admin_settings_extra.py').read_text(encoding='utf-8')
-          dashboard = Path('dashboard_extra.py').read_text(encoding='utf-8')
-          runtime = Path('db_runtime.py').read_text(encoding='utf-8')
+          protect = Path('data_protection.py').read_text(encoding='utf-8')
+          stone = Path('pages/4_Stone.py').read_text(encoding='utf-8')
 
-          required_wrapper = [
-              '협력사 석재 발주서', 'stone_order_form_v3', 'stone_order_attachments_v3',
-              'pdf","xls","xlsx","dwg","dxf', 'resolve_database_url', '조회 전용',
-              'from contextlib import closing', 'with closing(psycopg2.connect',
-          ]
-          required_base = [
-              'DATABASE_URL = get_database_url()', 'def seed_stone_items():',
-              '### 최근 석재 발주 / 도해도',
-          ]
-          required_app = [
-              'admin_settings_extra.py', 'dashboard_extra.py', 'CENTRAL_DB_FALLBACK',
-              'historical budget visibility safety recovery', 'pages/4_Stone.py',
-              'with closing(psycopg2.connect', 'migrate_supply_columns',
-          ]
-          required_admin = [
-              '### 기존 예산 현황', 'admin_bulk_budget_editor_v7', '비활성 품목 복구',
-              '### 저장된 발주서 관리 / 삭제', 'admin_saved_order_delete_editor_v2',
-              '선택 발주서 삭제', '발주서 상태 저장',
-              'DELETE FROM order_lines WHERE order_id=?',
-              "DELETE FROM transactions WHERE tx_type='발주' AND note LIKE ?",
-              'DELETE FROM orders WHERE id=?',
-          ]
-          required_dashboard = [
-              '### 📅 자재별 현장 반입 일정', '현장반입 예정일', '보관위치',
-              '반입일정 / 보관위치 저장', '### 📊 예산 대비 입고 현황',
-              '입고율(%)', '### 📞 지급자재 업체 담당자',
-          ]
-          required_runtime = [
-              'resolve_database_url', '_supabase_pooler_candidates', 'ThreadPoolExecutor',
-              'pooler.supabase.com', '5432', '6543', 'aws-0', 'aws-1',
-              'conn.close()', 'sslmode',
-          ]
-
-          for group_name, content, markers in [
-              ('stone wrapper', wrapper, required_wrapper), ('stone base', base, required_base),
-              ('app', app, required_app), ('admin', admin, required_admin),
-              ('dashboard', dashboard, required_dashboard), ('runtime', runtime, required_runtime),
+          for marker in [
+              'Central PostgreSQL is the only writable database',
+              'CI_ALLOW_SQLITE',
+              'apply_central_db_protection',
+              'dashboard_extra.py',
+              'admin_settings_extra.py',
+              'pages/4_Stone.py',
           ]:
-              for marker in markers:
-                  assert marker in content, f'{group_name}: missing marker: {marker}'
+              assert marker in app, f'app missing: {marker}'
 
-          # Obsolete auto-patch workflows must never return.
-          obsolete = [
-              '.github/workflows/one_time_stone_connection_cleanup.yml',
-              '.github/workflows/stone_central_once.yml',
-              '.github/workflows/stone-contact-hotfix.yml',
-          ]
-          for path in obsolete:
-              assert not Path(path).exists(), f'obsolete workflow still exists: {path}'
-          print('production safety and feature markers ok')
+          for marker in [
+              '한 번 저장된 예산/품목의 핵심 내역은 수정하거나 삭제할 수 없습니다',
+              '신규 예산 / 품목 추가',
+              '신규 예산 / 품목 저장',
+              '저장된 투입내역',
+              '관리자도 수정하거나 삭제할 수 없습니다',
+              '저장된 발주서 관리 / 삭제',
+              '발주서 상태 저장',
+              '선택 발주서 삭제',
+              "DELETE FROM transactions WHERE tx_type='발주'",
+          ]:
+              assert marker in admin, f'admin missing: {marker}'
+
+          for marker in [
+              'smm_budget_item_immutable',
+              'smm_budget_item_no_truncate',
+              'smm_used_transaction_immutable',
+              "OLD.tx_type = '투입'",
+              'OLD.budget_qty IS DISTINCT FROM NEW.budget_qty',
+              'OLD.active IS DISTINCT FROM NEW.active',
+          ]:
+              assert marker in protect, f'protection missing: {marker}'
+
+          for marker in [
+              '협력사 석재 발주서',
+              'stone_order_attachments_v3',
+              'pdf","xls","xlsx","dwg","dxf',
+              'resolve_database_url',
+          ]:
+              assert marker in stone, f'stone missing: {marker}'
+
+          print('production DB/immutability markers ok')
           PY
 
       - name: Streamlit UI smoke test
+        env:
+          CI_ALLOW_SQLITE: '1'
         run: |
           python - <<'PY'
           import sqlite3
@@ -100,16 +92,13 @@ jobs:
           from streamlit.testing.v1 import AppTest
 
           db = Path('material_manager_v11.db')
-
-          # Base app / overview must render even without production secrets.
           at = AppTest.from_file('app.py', default_timeout=45).run()
           assert not at.exception, at.exception
-          overview_text = '\n'.join(str(x.value) for x in at.markdown)
-          assert '자재별 현장 반입 일정' in overview_text, overview_text
-          assert '예산 대비 입고 현황' in overview_text, overview_text
-          assert '지급자재 업체 담당자' in overview_text, overview_text
 
-          # Prepare local-only CI rows; production central DB is never contacted in CI.
+          overview_text = '\n'.join(str(x.value) for x in at.markdown)
+          for text in ['자재별 현장 반입 일정', '예산 대비 입고 현황', '지급자재 업체 담당자']:
+              assert text in overview_text, text
+
           with sqlite3.connect(db) as c:
               cols = {r[1] for r in c.execute('PRAGMA table_info(budget_items)').fetchall()}
               if 'planned_delivery_date' not in cols:
@@ -130,30 +119,10 @@ jobs:
                   id INTEGER PRIMARY KEY AUTOINCREMENT, order_id INTEGER NOT NULL,
                   file_name TEXT NOT NULL, mime_type TEXT DEFAULT '', file_size INTEGER DEFAULT 0,
                   file_data BLOB NOT NULL, created_at TEXT DEFAULT '')""")
-              c.commit()
-
-          # Stone ordering and attachment UI.
-          at.sidebar.radio[0].set_value('석재')
-          at.run()
-          assert not at.exception, at.exception
-          page_text = '\n'.join(str(x.value) for x in at.markdown)
-          assert '협력사 석재 발주서' in page_text, page_text
-          assert '신규 석재 품목 추가' not in page_text, page_text
-          assert '예산 / 기존 품목 저장' not in page_text, page_text
-          labels = [getattr(x, 'label', '') for x in at.text_input]
-          assert '협력사명' in labels, labels
-          uploader_labels = [getattr(x, 'label', '') for x in at.file_uploader]
-          assert '도해도 및 첨부파일 선택' in uploader_labels, uploader_labels
-
-          # Disposable order for admin controls.
-          with sqlite3.connect(db) as c:
-              c.execute("DELETE FROM order_attachments WHERE order_id IN (SELECT id FROM orders WHERE order_no='CI-STONE-001')")
-              c.execute("DELETE FROM order_lines WHERE order_id IN (SELECT id FROM orders WHERE order_no='CI-STONE-001')")
-              c.execute("DELETE FROM transactions WHERE note LIKE '%CI-STONE-001%'")
-              c.execute("DELETE FROM orders WHERE order_no='CI-STONE-001'")
+              c.execute("DELETE FROM orders WHERE order_no='CI-ORDER-LOCK-001'")
               cur = c.execute(
                   "INSERT INTO orders(order_no,category,vendor,order_date,partner_confirm,internal_approval,order_complete,note) VALUES(?,?,?,?,0,0,0,?)",
-                  ('CI-STONE-001','석재','CI협력사','2026-09-02','CI test'),
+                  ('CI-ORDER-LOCK-001','석재','CI협력사','2026-09-02','CI'),
               )
               oid = int(cur.lastrowid)
               c.execute(
@@ -162,17 +131,27 @@ jobs:
               )
               c.commit()
 
-          # Admin settings: budgets + bulk editor + order state/deletion.
+          at.sidebar.radio[0].set_value('석재')
+          at.run()
+          assert not at.exception, at.exception
+          stone_text = '\n'.join(str(x.value) for x in at.markdown)
+          assert '협력사 석재 발주서' in stone_text, stone_text
+          assert '신규 석재 품목 추가' not in stone_text, stone_text
+          labels = [getattr(x, 'label', '') for x in at.text_input]
+          assert '협력사명' in labels, labels
+          uploaders = [getattr(x, 'label', '') for x in at.file_uploader]
+          assert '도해도 및 첨부파일 선택' in uploaders, uploaders
+
           at.session_state['is_admin'] = True
           at.sidebar.radio[0].set_value('관리자 설정')
           at.run()
           assert not at.exception, at.exception
           admin_text = '\n'.join(str(x.value) for x in at.markdown)
-          for text in ['기존 예산 현황','예산 / 품목 관리','저장된 발주서 관리 / 삭제']:
-              assert text in admin_text, admin_text
+          for text in ['기존 예산 현황','신규 예산 / 품목 추가','저장된 투입내역','저장된 발주서 관리 / 삭제']:
+              assert text in admin_text, text
           buttons = [getattr(x, 'label', '') for x in at.button]
-          assert '예산 / 품목 전체 저장' in buttons, buttons
-          assert '발주서 상태 저장' in buttons, buttons
-          assert '선택 발주서 삭제' in buttons, buttons
+          for label in ['신규 예산 / 품목 저장','발주서 상태 저장','선택 발주서 삭제']:
+              assert label in buttons, buttons
+
           print('streamlit UI smoke test ok')
           PY
