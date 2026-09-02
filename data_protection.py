@@ -4,9 +4,32 @@ Saved budget master data is append-only. The only fields that remain editable ar
 operational schedule metadata (planned_delivery_date, storage_location).
 Saved material-use transactions (tx_type='투입') are immutable and cannot be updated
 or deleted by any application code using the same database role.
+
+The protection DDL is installed only when missing. Normal Streamlit reruns perform a
+lightweight trigger-existence check instead of repeatedly dropping/creating triggers,
+which avoids unnecessary table locks under concurrent users.
 """
 from contextlib import closing
 import psycopg2
+
+_TRIGGER_NAMES = {
+    "smm_budget_item_immutable",
+    "smm_budget_item_no_truncate",
+    "smm_used_transaction_immutable",
+}
+
+
+def _installed(cur):
+    cur.execute(
+        """SELECT tgname FROM pg_trigger
+           WHERE NOT tgisinternal
+             AND tgname IN (
+                 'smm_budget_item_immutable',
+                 'smm_budget_item_no_truncate',
+                 'smm_used_transaction_immutable'
+             )"""
+    )
+    return {row[0] for row in cur.fetchall()} == _TRIGGER_NAMES
 
 
 def apply_central_db_protection(database_url: str):
@@ -90,7 +113,13 @@ FOR EACH ROW EXECUTE FUNCTION smm_protect_used_transaction();
             keepalives_count=3,
         )) as conn:
             with conn.cursor() as cur:
-                cur.execute(sql)
+                if _installed(cur):
+                    return True, "보호 적용 확인"
+
+                # Only one app session installs/repairs protection at a time.
+                cur.execute("SELECT pg_advisory_xact_lock(77120260902)")
+                if not _installed(cur):
+                    cur.execute(sql)
             conn.commit()
         return True, "보호 적용 완료"
     except Exception:
