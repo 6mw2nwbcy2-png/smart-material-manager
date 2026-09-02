@@ -1,0 +1,80 @@
+name: Deployed Streamlit UI Check
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  deployed-ui:
+    runs-on: ubuntu-latest
+    timeout-minutes: 12
+    steps:
+      - name: Wait for Streamlit Cloud deployment
+        run: sleep 75
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.13'
+
+      - name: Install browser test dependency
+        run: pip install selenium
+
+      - name: Check deployed UI three times
+        env:
+          APP_URL: https://d8fygpeejbjqgneyf8zw2x.streamlit.app/
+        run: |
+          python - <<'PY'
+          import os, time
+          from selenium import webdriver
+          from selenium.webdriver.chrome.options import Options
+          from selenium.webdriver.common.by import By
+          from selenium.webdriver.support.ui import WebDriverWait
+
+          url = os.environ['APP_URL']
+          opts = Options()
+          opts.add_argument('--headless=new')
+          opts.add_argument('--no-sandbox')
+          opts.add_argument('--disable-dev-shm-usage')
+          opts.add_argument('--window-size=1920,3000')
+          opts.add_argument('--disable-gpu')
+
+          driver = webdriver.Chrome(options=opts)
+          try:
+              for attempt in range(1, 4):
+                  driver.get(url)
+                  WebDriverWait(driver, 70).until(
+                      lambda d: 'Smart Material Manager' in d.find_element(By.TAG_NAME, 'body').text
+                  )
+                  time.sleep(5)
+                  body = driver.find_element(By.TAG_NAME, 'body').text
+                  print(f'=== DEPLOYED UI CHECK {attempt}/3 ===')
+                  print(body[:12000])
+
+                  bad = ['OperationalError', 'Traceback', 'This app has encountered an error']
+                  for marker in bad:
+                      assert marker not in body, f'deployed error marker found: {marker}'
+
+                  required = [
+                      'Smart Material Manager',
+                      '한눈에 보기',
+                      '자재별 현장 반입 일정',
+                      '예산 대비 입고 현황',
+                      '지급자재 업체 담당자',
+                  ]
+                  for marker in required:
+                      assert marker in body, f'deployed UI missing: {marker}'
+
+                  # This is the production goal. If this fails the log tells us the safe
+                  # DB status/reason shown by the app instead of pretending deployment is OK.
+                  assert '백업 DB 조회 전용' not in body, 'production is still in backup read-only mode'
+                  assert '중앙 DB 연결' in body, 'central DB connection marker is missing'
+                  driver.refresh()
+                  time.sleep(3)
+              print('deployed UI + central DB passed 3 consecutive checks')
+          finally:
+              driver.quit()
+          PY
