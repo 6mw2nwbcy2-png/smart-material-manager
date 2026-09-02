@@ -30,6 +30,11 @@ source = source.replace(
     1,
 )
 
+# 한눈에 보기: 지급자재 담당자 + 타일/석재 업체별 예산/투입/잔여 시각화.
+overview_anchor = '    st.info("일반 사용자는 자재 투입수량을 입력할 수 있고, 예산/품목/입고/발주상태 수정은 관리자만 가능합니다.")'
+overview_extra = overview_anchor + '''\n\n    try:\n        _extra = Path("dashboard_extra.py")\n        exec(compile(_extra.read_text(encoding="utf-8"), str(_extra), "exec"), globals(), globals())\n    except Exception as _overview_error:\n        st.warning(f"담당자/업체별 현황을 표시하지 못했습니다: {_overview_error}")'''
+source = source.replace(overview_anchor, overview_extra, 1)
+
 # 관리자 설정은 여러 행을 한 번에 추가/수정/삭제 후 한 번에 저장하는 방식으로 복구.
 admin_marker = 'elif menu == "관리자 설정":'
 pos = source.find(admin_marker)
