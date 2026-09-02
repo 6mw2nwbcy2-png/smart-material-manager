@@ -1,52 +1,38 @@
 """Stable stone entrypoint.
-Uses the original feature-rich stone implementation with central-DB-first operation
-and a safe SQLite fallback only when the central PostgreSQL DB is unavailable.
+Uses the original feature-rich stone implementation with the SAME central DB resolver
+as the main app so stone never silently switches to a different local database.
 """
 from pathlib import Path
 
 SRC = Path(__file__).with_name("stone_impl_v2.py")
 source = SRC.read_text(encoding="utf-8")
 
-# 1) Central DB first. Fall back to SQLite only if the configured PostgreSQL DB
-# cannot be reached during startup.
+# 1) Use the shared central DB resolver. If the central DB cannot be reached, stone is
+# read-only; it must not write to a separate SQLite copy because that would split data.
 start = source.index("DATABASE_URL = get_database_url()")
 end = source.index("def seed_stone_items():")
 
-stable_bootstrap = '''DATABASE_URL = get_database_url()
-USE_POSTGRES = bool(DATABASE_URL)
-CENTRAL_DB_ERROR = ""
-
-if USE_POSTGRES:
-    _probe = None
-    try:
-        _probe = psycopg2.connect(DATABASE_URL, connect_timeout=7)
-        with _probe.cursor() as _cur:
-            _cur.execute("SELECT 1")
-    except Exception as _exc:
-        CENTRAL_DB_ERROR = type(_exc).__name__
-        USE_POSTGRES = False
-    finally:
-        if _probe is not None:
-            try:
-                _probe.close()
-            except Exception:
-                pass
+stable_bootstrap = '''from db_runtime import resolve_database_url as _resolve_database_url
+_DB_RESOLUTION = _resolve_database_url(get_database_url(), st.secrets)
+DATABASE_URL = _DB_RESOLUTION.url
+USE_POSTGRES = _DB_RESOLUTION.connected
+CENTRAL_DB_FALLBACK = not USE_POSTGRES
+CENTRAL_DB_ENDPOINT = _DB_RESOLUTION.endpoint
+CENTRAL_DB_REASON = _DB_RESOLUTION.reason
 
 
 def _pg_sql(sql):
-    return sql.replace("?", "%s") if USE_POSTGRES else sql
+    return sql.replace("?", "%s")
 
 
 def execute(sql, params=()):
-    if USE_POSTGRES:
-        with psycopg2.connect(DATABASE_URL, connect_timeout=7) as c:
-            with c.cursor() as cur:
-                cur.execute(_pg_sql(sql), params)
-            c.commit()
-    else:
-        with sqlite3.connect(DB) as c:
-            c.execute(sql, params)
-            c.commit()
+    if not USE_POSTGRES:
+        st.error("중앙 DB가 연결되지 않아 석재 저장/수정/삭제를 차단했습니다. 기존 데이터 보호를 위한 조회 전용 상태입니다.")
+        st.stop()
+    with psycopg2.connect(DATABASE_URL, connect_timeout=7) as c:
+        with c.cursor() as cur:
+            cur.execute(_pg_sql(sql), params)
+        c.commit()
 
 
 def read(sql, params=()):
@@ -58,70 +44,46 @@ def read(sql, params=()):
 
 
 def ensure_schema():
-    if USE_POSTGRES:
-        ddl = [
-            """CREATE TABLE IF NOT EXISTS budget_items(
-                id SERIAL PRIMARY KEY, category TEXT NOT NULL, vendor TEXT DEFAULT '',
-                item_name TEXT NOT NULL, spec TEXT DEFAULT '', unit TEXT NOT NULL,
-                budget_qty DOUBLE PRECISION DEFAULT 0, tile_type TEXT DEFAULT '',
-                application_type TEXT DEFAULT '', default_destination TEXT DEFAULT '',
-                active INTEGER DEFAULT 1)""",
-            """CREATE TABLE IF NOT EXISTS transactions(
-                id SERIAL PRIMARY KEY, tx_date TEXT NOT NULL, item_id INTEGER NOT NULL,
-                tx_type TEXT NOT NULL, qty DOUBLE PRECISION NOT NULL,
-                destination TEXT DEFAULT '', note TEXT DEFAULT '', input_user TEXT DEFAULT '')""",
-            """CREATE TABLE IF NOT EXISTS orders(
-                id SERIAL PRIMARY KEY, order_no TEXT UNIQUE, category TEXT NOT NULL,
-                vendor TEXT DEFAULT '', order_date TEXT NOT NULL,
-                partner_confirm INTEGER DEFAULT 0, internal_approval INTEGER DEFAULT 0,
-                order_complete INTEGER DEFAULT 0, note TEXT DEFAULT '')""",
-            """CREATE TABLE IF NOT EXISTS order_lines(
-                id SERIAL PRIMARY KEY, order_id INTEGER NOT NULL, item_id INTEGER NOT NULL,
-                qty DOUBLE PRECISION NOT NULL, requested_delivery_date TEXT DEFAULT '',
-                destination TEXT DEFAULT '')""",
-            """CREATE TABLE IF NOT EXISTS order_attachments(
-                id SERIAL PRIMARY KEY, order_id INTEGER NOT NULL,
-                file_name TEXT NOT NULL, mime_type TEXT DEFAULT '', file_size INTEGER DEFAULT 0,
-                file_data BYTEA NOT NULL, created_at TEXT DEFAULT '')""",
-        ]
-        with psycopg2.connect(DATABASE_URL, connect_timeout=7) as c:
-            with c.cursor() as cur:
-                for q in ddl:
-                    cur.execute(q)
-                for name in ["delivery_recipient", "delivery_phone", "delivery_address", "storage_location"]:
-                    cur.execute(f"ALTER TABLE order_lines ADD COLUMN IF NOT EXISTS {name} TEXT DEFAULT ''")
-            c.commit()
-    else:
-        with sqlite3.connect(DB) as c:
-            c.execute("""CREATE TABLE IF NOT EXISTS budget_items(
-                id INTEGER PRIMARY KEY AUTOINCREMENT, category TEXT NOT NULL, vendor TEXT DEFAULT '',
-                item_name TEXT NOT NULL, spec TEXT DEFAULT '', unit TEXT NOT NULL,
-                budget_qty REAL DEFAULT 0, tile_type TEXT DEFAULT '', application_type TEXT DEFAULT '',
-                default_destination TEXT DEFAULT '', active INTEGER DEFAULT 1)""")
-            c.execute("""CREATE TABLE IF NOT EXISTS transactions(
-                id INTEGER PRIMARY KEY AUTOINCREMENT, tx_date TEXT NOT NULL, item_id INTEGER NOT NULL,
-                tx_type TEXT NOT NULL, qty REAL NOT NULL, destination TEXT DEFAULT '',
-                note TEXT DEFAULT '', input_user TEXT DEFAULT '')""")
-            c.execute("""CREATE TABLE IF NOT EXISTS orders(
-                id INTEGER PRIMARY KEY AUTOINCREMENT, order_no TEXT UNIQUE, category TEXT NOT NULL,
-                vendor TEXT DEFAULT '', order_date TEXT NOT NULL, partner_confirm INTEGER DEFAULT 0,
-                internal_approval INTEGER DEFAULT 0, order_complete INTEGER DEFAULT 0,
-                note TEXT DEFAULT '')""")
-            c.execute("""CREATE TABLE IF NOT EXISTS order_lines(
-                id INTEGER PRIMARY KEY AUTOINCREMENT, order_id INTEGER NOT NULL, item_id INTEGER NOT NULL,
-                qty REAL NOT NULL, requested_delivery_date TEXT DEFAULT '', destination TEXT DEFAULT '')""")
-            existing = {row[1] for row in c.execute("PRAGMA table_info(order_lines)").fetchall()}
+    if not USE_POSTGRES:
+        return
+    ddl = [
+        """CREATE TABLE IF NOT EXISTS budget_items(
+            id SERIAL PRIMARY KEY, category TEXT NOT NULL, vendor TEXT DEFAULT '',
+            item_name TEXT NOT NULL, spec TEXT DEFAULT '', unit TEXT NOT NULL,
+            budget_qty DOUBLE PRECISION DEFAULT 0, tile_type TEXT DEFAULT '',
+            application_type TEXT DEFAULT '', default_destination TEXT DEFAULT '',
+            active INTEGER DEFAULT 1)""",
+        """CREATE TABLE IF NOT EXISTS transactions(
+            id SERIAL PRIMARY KEY, tx_date TEXT NOT NULL, item_id INTEGER NOT NULL,
+            tx_type TEXT NOT NULL, qty DOUBLE PRECISION NOT NULL,
+            destination TEXT DEFAULT '', note TEXT DEFAULT '', input_user TEXT DEFAULT '')""",
+        """CREATE TABLE IF NOT EXISTS orders(
+            id SERIAL PRIMARY KEY, order_no TEXT UNIQUE, category TEXT NOT NULL,
+            vendor TEXT DEFAULT '', order_date TEXT NOT NULL,
+            partner_confirm INTEGER DEFAULT 0, internal_approval INTEGER DEFAULT 0,
+            order_complete INTEGER DEFAULT 0, note TEXT DEFAULT '')""",
+        """CREATE TABLE IF NOT EXISTS order_lines(
+            id SERIAL PRIMARY KEY, order_id INTEGER NOT NULL, item_id INTEGER NOT NULL,
+            qty DOUBLE PRECISION NOT NULL, requested_delivery_date TEXT DEFAULT '',
+            destination TEXT DEFAULT '')""",
+        """CREATE TABLE IF NOT EXISTS order_attachments(
+            id SERIAL PRIMARY KEY, order_id INTEGER NOT NULL,
+            file_name TEXT NOT NULL, mime_type TEXT DEFAULT '', file_size INTEGER DEFAULT 0,
+            file_data BYTEA NOT NULL, created_at TEXT DEFAULT '')""",
+    ]
+    with psycopg2.connect(DATABASE_URL, connect_timeout=7) as c:
+        with c.cursor() as cur:
+            for q in ddl:
+                cur.execute(q)
             for name in ["delivery_recipient", "delivery_phone", "delivery_address", "storage_location"]:
-                if name not in existing:
-                    c.execute(f"ALTER TABLE order_lines ADD COLUMN {name} TEXT DEFAULT ''")
-            c.execute("""CREATE TABLE IF NOT EXISTS order_attachments(
-                id INTEGER PRIMARY KEY AUTOINCREMENT, order_id INTEGER NOT NULL,
-                file_name TEXT NOT NULL, mime_type TEXT DEFAULT '', file_size INTEGER DEFAULT 0,
-                file_data BLOB NOT NULL, created_at TEXT DEFAULT '')""")
-            c.commit()
+                cur.execute(f"ALTER TABLE order_lines ADD COLUMN IF NOT EXISTS {name} TEXT DEFAULT ''")
+        c.commit()
 
 '''
 source = source[:start] + stable_bootstrap + source[end:]
+
+# In read-only fallback mode, do not seed/write a different local copy.
+source = source.replace('ensure_schema()\nseed_stone_items()', 'ensure_schema()\nif USE_POSTGRES:\n    seed_stone_items()', 1)
 
 # 2) Items/budget are managed only in the global 관리자 설정 screen.
 admin_start_marker = '''# --------------------------------------------------
@@ -252,7 +214,7 @@ if order_start >= 0 and order_end > order_start:
 
 source = source.replace(
     'st.caption("☁ 중앙 DB 연결")',
-    'st.caption("☁ 중앙 DB 연결" if USE_POSTGRES else "⚠ 중앙 DB 연결 실패 · 백업 DB")',
+    'st.caption(("☁ 중앙 DB 연결" + (" · Pooler" if CENTRAL_DB_ENDPOINT == "pooler" else "")) if USE_POSTGRES else "🔒 중앙 DB 미연결 · 조회 전용")',
     1,
 )
 exec(compile(source, str(SRC), "exec"), globals(), globals())
