@@ -1,20 +1,21 @@
 """Smart Material Manager stable entrypoint.
-Uses a repository-pinned application snapshot so deployment does not depend on runtime
-GitHub fetches or the central DB being available during startup.
+Central DB is preferred so the original budget/order data is shown again.
+If the central DB is temporarily unavailable, the app falls back to the repository
+SQLite backup instead of crashing.
 """
 from pathlib import Path
 
 SNAPSHOT = Path(__file__).with_name("app_snapshot.py")
 source = SNAPSHOT.read_text(encoding="utf-8")
 
-# 안정화 1단계: 중앙 DB 장애가 사이트 전체를 막지 않도록 백업 DB로 고정 실행.
+# 중앙 DB 우선 + 연결 실패 시에만 백업 DB 자동 전환.
 source = source.replace(
     "DATABASE_URL = get_database_url()\nUSE_POSTGRES = bool(DATABASE_URL)",
-    "DATABASE_URL = ''\nUSE_POSTGRES = False",
+    '''DATABASE_URL = get_database_url()\nUSE_POSTGRES = bool(DATABASE_URL)\nCENTRAL_DB_FALLBACK = False\n\nif USE_POSTGRES:\n    _probe = None\n    try:\n        _probe = psycopg2.connect(DATABASE_URL, connect_timeout=5)\n    except Exception:\n        USE_POSTGRES = False\n        CENTRAL_DB_FALLBACK = True\n    finally:\n        if _probe is not None:\n            try:\n                _probe.close()\n            except Exception:\n                pass''',
     1,
 )
 
-# 석재는 원래 기능이 들어있는 v2 화면을 안정화 래퍼를 통해 실행.
+# 석재는 안정화 래퍼를 통해 실행.
 source = source.replace(
     'runpy.run_path("pages/stone_impl.py", run_name="__main__")',
     'runpy.run_path("pages/4_Stone.py", run_name="__main__")',
@@ -26,16 +27,16 @@ source = source.replace(
 
 source = source.replace(
     'st.caption("☁ 중앙 DB 연결" if USE_POSTGRES else "💻 로컬 SQLite 모드")',
-    'st.caption("🛡 안정화 모드 · 백업 DB")\nst.info("현재 사이트 안정화를 위해 백업 DB 모드로 운영 중입니다. 기존 기능은 유지하고 중앙 DB만 별도 복구합니다.")',
+    '''st.caption("☁ 중앙 DB 연결" if USE_POSTGRES else "🛟 백업 DB 모드")\nif CENTRAL_DB_FALLBACK:\n    st.warning("중앙 DB 연결이 일시적으로 불가하여 백업 DB로 표시 중입니다. 중앙 DB가 정상화되면 기존 예산/발주 내역이 다시 표시됩니다.")''',
     1,
 )
 
-# 한눈에 보기: 지급자재 담당자 + 타일/석재 업체별 예산/투입/잔여 시각화.
+# 한눈에 보기 확장 화면 유지.
 overview_anchor = '    st.info("일반 사용자는 자재 투입수량을 입력할 수 있고, 예산/품목/입고/발주상태 수정은 관리자만 가능합니다.")'
 overview_extra = overview_anchor + '''\n\n    try:\n        _extra = Path("dashboard_extra.py")\n        exec(compile(_extra.read_text(encoding="utf-8"), str(_extra), "exec"), globals(), globals())\n    except Exception as _overview_error:\n        st.warning(f"담당자/업체별 현황을 표시하지 못했습니다: {_overview_error}")'''
 source = source.replace(overview_anchor, overview_extra, 1)
 
-# 관리자 설정은 여러 행을 한 번에 추가/수정/삭제 후 한 번에 저장하는 방식으로 복구.
+# 관리자 설정: 예산/품목 일괄관리 + 저장된 발주서 상태/삭제.
 admin_marker = 'elif menu == "관리자 설정":'
 pos = source.find(admin_marker)
 if pos >= 0:
@@ -69,10 +70,10 @@ if pos >= 0:
                 "application_type": st.column_config.TextColumn("적용구분"),
                 "default_destination": st.column_config.TextColumn("기본납품처"),
             },
-            key="admin_bulk_budget_editor_v3",
+            key="admin_bulk_budget_editor_v5",
         )
 
-        if st.button("예산 / 품목 전체 저장", type="primary", key="admin_bulk_save_v3"):
+        if st.button("예산 / 품목 전체 저장", type="primary", key="admin_bulk_save_v5"):
             current_ids = set(items["id"].astype(int).tolist()) if len(items) else set()
             edited_ids = set()
             seen = set()
@@ -148,86 +149,51 @@ if pos >= 0:
 
         st.markdown("---")
         st.markdown("### 저장된 발주서 관리 / 삭제")
-        st.caption("철근·레미콘·타일·석재 발주서를 한곳에서 확인하고 여러 건을 선택해 삭제할 수 있습니다. 삭제하면 해당 발주 품목·첨부파일·발주 누계도 함께 제거됩니다.")
-
-        admin_orders = read(
-            """SELECT o.id,o.order_no,o.category,o.vendor,o.order_date,
-                      o.partner_confirm,o.internal_approval,o.order_complete,
-                      (SELECT COUNT(*) FROM order_lines ol WHERE ol.order_id=o.id) AS item_count
-               FROM orders o
-               ORDER BY o.id DESC"""
-        )
+        st.caption("발주서 상태를 수정하거나 저장된 발주서를 삭제할 수 있습니다.")
+        admin_orders = read("SELECT * FROM orders ORDER BY id DESC")
 
         if not len(admin_orders):
             st.info("저장된 발주서가 없습니다.")
         else:
-            order_manage = admin_orders.copy()
-            order_manage["상태"] = order_manage.apply(
-                lambda r: "발주완료" if int(r["order_complete"] or 0)
-                else "결재완료" if int(r["internal_approval"] or 0)
-                else "협력사 확인완료" if int(r["partner_confirm"] or 0)
-                else "결재/확인중",
-                axis=1,
-            )
-            order_manage = order_manage[["id","order_no","category","vendor","order_date","item_count","상태"]]
-            order_manage.columns = ["id","발주번호","공종","협력사","발주일","품목수","상태"]
-            order_manage["삭제"] = False
+            for _, o in admin_orders.iterrows():
+                status = "발주완료" if int(o.order_complete or 0) else "결재완료" if int(o.internal_approval or 0) else "협력사 확인완료" if int(o.partner_confirm or 0) else "진행중"
+                with st.expander(f"{o.order_no} | {o.category} | {o.vendor} | {status}"):
+                    c1, c2, c3 = st.columns(3)
+                    pc = c1.checkbox("협력사 확인", value=bool(o.partner_confirm), key=f"adm_pc_{o.id}")
+                    ia = c2.checkbox("결재 완료", value=bool(o.internal_approval), key=f"adm_ia_{o.id}")
+                    oc = c3.checkbox("발주 완료", value=bool(o.order_complete), key=f"adm_oc_{o.id}")
 
-            delete_edit = st.data_editor(
-                order_manage,
-                use_container_width=True,
-                hide_index=True,
-                disabled=["id","발주번호","공종","협력사","발주일","품목수","상태"],
-                column_config={
-                    "id": None,
-                    "삭제": st.column_config.CheckboxColumn("삭제 선택", default=False),
-                },
-                key="admin_saved_order_delete_editor_v1",
-            )
+                    b1, b2 = st.columns(2)
+                    if b1.button("상태 저장", key=f"adm_order_save_{o.id}", type="primary"):
+                        execute(
+                            "UPDATE orders SET partner_confirm=?,internal_approval=?,order_complete=? WHERE id=?",
+                            (int(pc), int(ia), int(oc), int(o.id)),
+                        )
+                        st.success("발주서 상태 저장 완료")
+                        st.rerun()
 
-            selected_orders = delete_edit[delete_edit["삭제"] == True].copy()
-            if len(selected_orders):
-                st.caption(f"삭제 선택: {len(selected_orders)}건")
-
-            confirm_order_delete = st.checkbox(
-                "선택한 발주서를 실제로 삭제합니다.",
-                key="admin_saved_order_delete_confirm_v1",
-            )
-
-            if st.button("선택 발주서 삭제", key="admin_saved_order_delete_button_v1"):
-                if not len(selected_orders):
-                    st.warning("삭제할 발주서를 먼저 선택해주세요.")
-                elif not confirm_order_delete:
-                    st.warning("삭제 확인을 체크해주세요.")
-                else:
-                    deleted_count = 0
-                    with sqlite3.connect(DB) as c:
-                        existing_tables = {
-                            row[0]
-                            for row in c.execute("SELECT name FROM sqlite_master WHERE type='table'").fetchall()
-                        }
-                        for _, order_row in selected_orders.iterrows():
-                            oid = int(order_row["id"])
-                            order_no = str(order_row["발주번호"])
-                            if "order_attachments" in existing_tables:
-                                c.execute("DELETE FROM order_attachments WHERE order_id=?", (oid,))
-                            c.execute("DELETE FROM order_lines WHERE order_id=?", (oid,))
-                            c.execute(
-                                "DELETE FROM transactions WHERE tx_type='발주' AND note LIKE ?",
-                                (f"%{order_no}%",),
-                            )
-                            c.execute("DELETE FROM orders WHERE id=?", (oid,))
-                            deleted_count += 1
-                        c.commit()
-
-                    st.success(f"선택한 발주서 {deleted_count}건을 삭제했습니다.")
-                    st.rerun()
+                    delete_ok = b2.checkbox("삭제 확인", key=f"adm_delete_confirm_{o.id}")
+                    if b2.button("발주서 삭제", key=f"adm_order_delete_{o.id}", disabled=not delete_ok):
+                        oid = int(o.id)
+                        order_no = str(o.order_no)
+                        try:
+                            execute("DELETE FROM order_attachments WHERE order_id=?", (oid,))
+                        except Exception:
+                            pass
+                        try:
+                            execute("DELETE FROM transactions WHERE tx_type='발주' AND note LIKE ?", (f"%{order_no}%",))
+                        except Exception:
+                            pass
+                        execute("DELETE FROM order_lines WHERE order_id=?", (oid,))
+                        execute("DELETE FROM orders WHERE id=?", (oid,))
+                        st.success(f"{order_no} 발주서 삭제 완료")
+                        st.rerun()
 
         st.markdown("---")
         st.markdown("### 관리자 비밀번호 변경")
-        p1 = st.text_input("새 비밀번호", type="password", key="admin_pw1_v3")
-        p2 = st.text_input("새 비밀번호 확인", type="password", key="admin_pw2_v3")
-        if st.button("비밀번호 변경", key="admin_pw_change_v3"):
+        p1 = st.text_input("새 비밀번호", type="password", key="admin_pw1_v5")
+        p2 = st.text_input("새 비밀번호 확인", type="password", key="admin_pw2_v5")
+        if st.button("비밀번호 변경", key="admin_pw_change_v5"):
             if len(p1) < 4:
                 st.warning("4자리 이상 입력하세요.")
             elif p1 != p2:
