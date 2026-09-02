@@ -1,6 +1,6 @@
 """Smart Material Manager stable entrypoint.
-Central DB is preferred. If it is unavailable, the app falls back immediately to the
-backup DB without exposing raw driver errors or blocking the UI.
+Central DB is always preferred. If it is unavailable, the app opens in read-only
+backup mode so budget/order/input data cannot diverge or be accidentally overwritten.
 """
 from pathlib import Path
 
@@ -9,14 +9,14 @@ source = SNAPSHOT.read_text(encoding="utf-8")
 
 source = source.replace(
     "DATABASE_URL = get_database_url()\nUSE_POSTGRES = bool(DATABASE_URL)",
-    '''from db_runtime import resolve_database_url as _resolve_database_url\n_DB_RESOLUTION = _resolve_database_url(get_database_url(), st.secrets)\nDATABASE_URL = _DB_RESOLUTION.url\nUSE_POSTGRES = _DB_RESOLUTION.connected\nCENTRAL_DB_FALLBACK = not USE_POSTGRES\nCENTRAL_DB_ENDPOINT = _DB_RESOLUTION.endpoint''',
+    '''from db_runtime import resolve_database_url as _resolve_database_url\n_DB_RESOLUTION = _resolve_database_url(get_database_url(), st.secrets)\nDATABASE_URL = _DB_RESOLUTION.url\nUSE_POSTGRES = _DB_RESOLUTION.connected\nCENTRAL_DB_FALLBACK = not USE_POSTGRES\nCENTRAL_DB_ENDPOINT = _DB_RESOLUTION.endpoint\nCENTRAL_DB_REASON = _DB_RESOLUTION.reason''',
     1,
 )
 
-# 중앙 DB/백업 DB 어느 쪽이든, 과거 잘못된 일괄 저장으로 모든 예산 품목이
-# active=0 처리된 경우 앱 시작 시 즉시 다시 표시한다. 실제 행은 삭제하지 않는다.
+# 과거 잘못된 일괄 저장으로 모든 예산 품목이 active=0 처리된 경우에만 복구한다.
+# 중앙 DB 연결 상태에서만 실행하며 행 자체를 삭제하거나 수량을 변경하지 않는다.
 _recovery_anchor = 'seed()\n\n# ---------------- helpers ----------------'
-_recovery_patch = '''seed()\n\n# -------- budget visibility safety recovery --------\ntry:\n    _all_budget_n = int(read("SELECT COUNT(*) AS n FROM budget_items").iloc[0]["n"])\n    _active_budget_n = int(read("SELECT COUNT(*) AS n FROM budget_items WHERE active=1").iloc[0]["n"])\n    if _all_budget_n > 0 and _active_budget_n == 0:\n        execute("UPDATE budget_items SET active=1")\nexcept Exception:\n    pass\n\n# ---------------- helpers ----------------'''
+_recovery_patch = '''seed()\n\n# -------- budget visibility safety recovery --------\nif USE_POSTGRES:\n    try:\n        _all_budget_n = int(read("SELECT COUNT(*) AS n FROM budget_items").iloc[0]["n"])\n        _active_budget_n = int(read("SELECT COUNT(*) AS n FROM budget_items WHERE active=1").iloc[0]["n"])\n        if _all_budget_n > 0 and _active_budget_n == 0:\n            execute("UPDATE budget_items SET active=1")\n    except Exception:\n        pass\n\n# 중앙 DB가 끊긴 경우 로컬 백업은 조회만 허용한다.\n# 예산/발주/입고/투입/상태/삭제가 백업 DB에 따로 저장되는 것을 원천 차단한다.\nif CENTRAL_DB_FALLBACK:\n    def execute(sql, params=()):\n        st.error("중앙 DB가 연결되지 않아 저장/수정/삭제를 차단했습니다. 기존 예산·발주·입고·투입 데이터 보호를 위한 조회 전용 모드입니다.")\n        st.stop()\n\n# ---------------- helpers ----------------'''
 source = source.replace(_recovery_anchor, _recovery_patch, 1)
 
 # 석재는 기능이 복구된 안정화 래퍼를 통해 실행.
@@ -29,10 +29,10 @@ source = source.replace(
     'runpy.run_path("pages/4_Stone.py", run_name="__main__")',
 )
 
-# DB 장애 상세를 사용자 화면에 노출하지 않는다. 사이트는 안전모드로 계속 사용 가능.
+# DB 상태를 오해하지 않도록 명확히 표시.
 source = source.replace(
     'st.caption("☁ 중앙 DB 연결" if USE_POSTGRES else "💻 로컬 SQLite 모드")',
-    '''st.caption(("☁ 중앙 DB 연결" + (" · Pooler" if CENTRAL_DB_ENDPOINT == "pooler" else "")) if USE_POSTGRES else "🛡 안정화 DB 연결")''',
+    '''st.caption(("☁ 중앙 DB 연결" + (" · Pooler" if CENTRAL_DB_ENDPOINT == "pooler" else "")) if USE_POSTGRES else "🔒 백업 DB 조회 전용")\nif CENTRAL_DB_FALLBACK:\n    st.warning("중앙 DB가 현재 연결되지 않았습니다. 데이터 보호를 위해 예산·발주·입고·투입의 저장/수정/삭제는 모두 잠겨 있습니다. 중앙 DB가 다시 연결되면 기존 데이터로 자동 복귀합니다.")''',
     1,
 )
 
