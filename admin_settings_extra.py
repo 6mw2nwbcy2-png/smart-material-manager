@@ -6,6 +6,43 @@ st.subheader("관리자 설정")
 if not is_admin():
     st.warning("관리자 로그인 후 사용할 수 있습니다.")
 else:
+    # --------------------------------------------------
+    # 과거 방식 예산 현황 복구
+    # --------------------------------------------------
+    st.markdown("### 기존 예산 현황")
+    st.caption("기존에 저장되어 있던 예산수량을 공종별로 그대로 확인합니다.")
+
+    _budget_all = read(
+        """SELECT id,category,vendor,item_name,spec,unit,budget_qty,
+                  tile_type,application_type,default_destination
+           FROM budget_items
+           WHERE active=1
+           ORDER BY category,vendor,spec,item_name"""
+    )
+
+    if len(_budget_all):
+        _budget_filter = st.selectbox(
+            "예산 공종",
+            ["전체", "철근", "레미콘", "타일", "석재"],
+            key="admin_budget_history_filter_v1",
+        )
+        _budget_show = _budget_all.copy()
+        if _budget_filter != "전체":
+            _budget_show = _budget_show[_budget_show["category"] == _budget_filter].copy()
+
+        _budget_show = _budget_show[[
+            "category", "vendor", "item_name", "spec", "unit", "budget_qty",
+            "tile_type", "application_type", "default_destination"
+        ]]
+        _budget_show.columns = [
+            "공종", "협력사", "품명", "규격", "단위", "예산수량",
+            "타일/석재구분", "적용구분", "기본납품처"
+        ]
+        st.dataframe(_budget_show, use_container_width=True, hide_index=True)
+    else:
+        st.info("기존 예산 품목이 없습니다.")
+
+    st.markdown("---")
     st.markdown("### 예산 / 품목 관리")
     st.caption("철근·레미콘·타일·석재를 한 표에서 여러 행 추가/수정할 수 있습니다. 삭제는 반드시 '삭제' 체크 후 저장해야 반영됩니다.")
 
