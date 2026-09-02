@@ -1,1 +1,1 @@
-Emergency site recovery trigger 2026-09-02 20:46 KST. Restored main to known-good stable-final-20260831 build. No application logic changes in this trigger commit.
+Central DB preferred mode redeploy trigger 2026-09-02 21:52 KST. Existing DATABASE_URL remains the primary persistent store; SQLite is temporary fallback only. No stored data is reset by this trigger.
