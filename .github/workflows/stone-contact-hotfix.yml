@@ -1,0 +1,119 @@
+name: Stone contact hotfix once
+
+on:
+  push:
+    branches: [main]
+
+permissions:
+  contents: write
+
+jobs:
+  patch:
+    if: github.actor != 'github-actions[bot]'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Patch stone page
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+          p = Path('pages/4_Stone.py')
+          s = p.read_text(encoding='utf-8')
+          if 'STONE_CONTACT_PREFLIGHT_V1' in s:
+              raise SystemExit(0)
+          marker = 'from pathlib import Path\n\nSRC = Path(__file__).with_name("stone_impl_v2.py")'
+          insert = '''from pathlib import Path
+import sqlite3
+import pandas as pd
+import streamlit as st
+
+STONE_CONTACT_PREFLIGHT_V1 = True
+LOCAL_DB = Path("material_manager_v11.db")
+
+# 석재 화면 진입 전에 최소 품목과 업체 담당자 DB를 항상 준비합니다.
+# 현재 안정화 모드(SQLite)에서도 발주 화면이 비어버리지 않게 합니다.
+def _stone_preflight():
+    with sqlite3.connect(LOCAL_DB) as c:
+        c.execute("""CREATE TABLE IF NOT EXISTS vendor_contacts(
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            category TEXT NOT NULL DEFAULT '석재',
+            vendor TEXT NOT NULL DEFAULT '',
+            manager_name TEXT DEFAULT '',
+            email TEXT DEFAULT '',
+            phone TEXT DEFAULT ''
+        )""")
+        c.execute("""CREATE TABLE IF NOT EXISTS budget_items(
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            category TEXT NOT NULL,
+            vendor TEXT DEFAULT '',
+            item_name TEXT NOT NULL,
+            spec TEXT DEFAULT '',
+            unit TEXT NOT NULL,
+            budget_qty REAL DEFAULT 0,
+            tile_type TEXT DEFAULT '',
+            application_type TEXT DEFAULT '',
+            default_destination TEXT DEFAULT '',
+            active INTEGER DEFAULT 1
+        )""")
+        n = c.execute("SELECT COUNT(*) FROM budget_items WHERE category='석재' AND active=1").fetchone()[0]
+        if not n:
+            c.execute("""INSERT INTO budget_items(category,vendor,item_name,spec,unit,budget_qty,tile_type,application_type,default_destination,active)
+                         VALUES('석재','','인조석','','M',100,'인조석','','현장',1)""")
+            c.execute("""INSERT INTO budget_items(category,vendor,item_name,spec,unit,budget_qty,tile_type,application_type,default_destination,active)
+                         VALUES('석재','','천연가공석','','M',100,'천연가공석','','현장',1)""")
+        c.commit()
+
+    st.markdown("### 업체 담당자 / 이메일")
+    st.caption("이 정보는 관리자 로그인이 없어도 누구나 추가·수정·삭제할 수 있습니다. 여러 업체를 한 번에 입력한 뒤 저장하세요.")
+    with sqlite3.connect(LOCAL_DB) as c:
+        contacts = pd.read_sql_query(
+            "SELECT id,vendor,manager_name,email,phone FROM vendor_contacts WHERE category='석재' ORDER BY vendor,id", c
+        )
+    contacts.columns = ["id","협력사","담당자","이메일","연락처"]
+    edited = st.data_editor(
+        contacts,
+        use_container_width=True,
+        hide_index=True,
+        disabled=["id"],
+        num_rows="dynamic",
+        column_config={
+            "id": None,
+            "협력사": st.column_config.TextColumn("협력사", required=True),
+            "담당자": st.column_config.TextColumn("담당자"),
+            "이메일": st.column_config.TextColumn("이메일"),
+            "연락처": st.column_config.TextColumn("연락처"),
+        },
+        key="stone_vendor_contacts_editor_v1",
+    )
+    if st.button("업체 담당자 저장", type="primary", key="stone_vendor_contacts_save_v1"):
+        rows = []
+        for _, r in edited.iterrows():
+            vendor = str(r.get("협력사", "") or "").strip()
+            if not vendor:
+                continue
+            rows.append((vendor, str(r.get("담당자", "") or "").strip(), str(r.get("이메일", "") or "").strip(), str(r.get("연락처", "") or "").strip()))
+        with sqlite3.connect(LOCAL_DB) as c:
+            c.execute("DELETE FROM vendor_contacts WHERE category='석재'")
+            for vendor, manager, email, phone in rows:
+                c.execute("INSERT INTO vendor_contacts(category,vendor,manager_name,email,phone) VALUES('석재',?,?,?,?)", (vendor,manager,email,phone))
+            c.commit()
+        st.success("업체 담당자 정보가 저장되었습니다.")
+        st.rerun()
+
+_stone_preflight()
+
+SRC = Path(__file__).with_name("stone_impl_v2.py")'''
+          if marker not in s:
+              raise SystemExit('target marker not found')
+          s = s.replace(marker, insert, 1)
+          p.write_text(s, encoding='utf-8')
+          PY
+          python -m py_compile pages/4_Stone.py
+      - name: Commit patch
+        run: |
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add pages/4_Stone.py
+          git diff --cached --quiet && exit 0
+          git commit -m 'fix: restore stone defaults and editable vendor contacts'
+          git push
