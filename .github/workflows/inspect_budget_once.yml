@@ -1,0 +1,26 @@
+name: Inspect historical budget once
+
+on:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  inspect:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Inspect historical SQLite budget data
+        run: |
+          set -e
+          git show 1d2387795121db7da8c61f8d647d1932d4790a27:material_manager_v11.db > /tmp/historical.db
+          echo '=== budget_items ==='
+          sqlite3 -header -csv /tmp/historical.db "SELECT id,category,vendor,item_name,spec,unit,budget_qty,tile_type,application_type,default_destination,active FROM budget_items ORDER BY id;"
+          echo '=== transactions ==='
+          sqlite3 -header -csv /tmp/historical.db "SELECT id,tx_date,item_id,tx_type,qty,destination,note,input_user FROM transactions ORDER BY id;"
+          echo '=== orders ==='
+          sqlite3 -header -csv /tmp/historical.db "SELECT * FROM orders ORDER BY id;"
