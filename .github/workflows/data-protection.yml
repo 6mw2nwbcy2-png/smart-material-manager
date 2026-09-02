@@ -14,40 +14,53 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - name: Verify central-only write protection
+
+      - name: Verify central-only production and immutable saved data
         run: |
           python - <<'PY'
           from pathlib import Path
 
           app = Path('app.py').read_text(encoding='utf-8')
+          admin = Path('admin_settings_extra.py').read_text(encoding='utf-8')
+          protect = Path('data_protection.py').read_text(encoding='utf-8')
           stone = Path('pages/4_Stone.py').read_text(encoding='utf-8')
 
-          app_required = [
+          for marker in [
+              'Central PostgreSQL is the only writable database',
+              'if not USE_POSTGRES and not _CI_ALLOW_SQLITE:',
+              '로컬 DB 저장은 사용하지 않습니다',
+              'apply_central_db_protection',
               'CENTRAL_DB_FALLBACK = not USE_POSTGRES',
-              'if CENTRAL_DB_FALLBACK:',
-              '저장/수정/삭제를 차단했습니다',
-              'st.stop()',
-              '🔒 백업 DB 조회 전용',
-          ]
-          stone_required = [
+          ]:
+              assert marker in app, f'app guard missing: {marker}'
+
+          for marker in [
+              'smm_budget_item_immutable',
+              'smm_budget_item_no_truncate',
+              'smm_used_transaction_immutable',
+              '저장된 예산/품목의 핵심 내역은 수정할 수 없습니다',
+              '저장된 투입내역은 수정할 수 없습니다',
+              '저장된 투입내역은 삭제할 수 없습니다',
+          ]:
+              assert marker in protect, f'DB protection missing: {marker}'
+
+          for marker in [
+              '저장된 예산/품목의 핵심 내역은 수정하거나 삭제할 수 없습니다',
+              '신규 예산 / 품목 추가',
+              '저장된 투입내역',
+              '관리자도 수정하거나 삭제할 수 없습니다',
+          ]:
+              assert marker in admin, f'admin lock UI missing: {marker}'
+
+          for marker in [
               'CENTRAL_DB_FALLBACK = not USE_POSTGRES',
-              'if not USE_POSTGRES:',
               '석재 저장/수정/삭제를 차단했습니다',
-              'st.stop()',
-          ]
+          ]:
+              assert marker in stone, f'stone guard missing: {marker}'
 
-          for marker in app_required:
-              assert marker in app, f'app.py data guard missing: {marker}'
-          for marker in stone_required:
-              assert marker in stone, f'pages/4_Stone.py data guard missing: {marker}'
+          # Production must never silently write to local SQLite when central DB is down.
+          assert '중앙 DB 미연결 · 로컬 저장 가능' not in app
+          assert '백업 DB 모드로 운영' not in app
 
-          # Never allow a production fallback that writes to local SQLite.
-          forbidden = [
-              'CENTRAL_DB_FALLBACK = True\n    def execute(sql, params=()):\n        with sqlite3.connect',
-              '중앙 DB 미연결 · 로컬 저장 가능',
-          ]
-          for marker in forbidden:
-              assert marker not in app, f'unsafe local-write fallback found: {marker}'
-
-          print('central-only write protection is locked')
+          print('central DB + immutable saved-data guard locked')
           PY
