@@ -13,6 +13,12 @@ source = source.replace(
     1,
 )
 
+# 중앙 DB/백업 DB 어느 쪽이든, 과거 잘못된 일괄 저장으로 모든 예산 품목이
+# active=0 처리된 경우 앱 시작 시 즉시 다시 표시한다. 실제 행은 삭제하지 않는다.
+_recovery_anchor = 'seed()\n\n# ---------------- helpers ----------------'
+_recovery_patch = '''seed()\n\n# -------- budget visibility safety recovery --------\ntry:\n    _all_budget_n = int(read("SELECT COUNT(*) AS n FROM budget_items").iloc[0]["n"])\n    _active_budget_n = int(read("SELECT COUNT(*) AS n FROM budget_items WHERE active=1").iloc[0]["n"])\n    if _all_budget_n > 0 and _active_budget_n == 0:\n        execute("UPDATE budget_items SET active=1")\nexcept Exception:\n    pass\n\n# ---------------- helpers ----------------'''
+source = source.replace(_recovery_anchor, _recovery_patch, 1)
+
 # 석재는 기능이 복구된 안정화 래퍼를 통해 실행.
 source = source.replace(
     'runpy.run_path("pages/stone_impl.py", run_name="__main__")',
