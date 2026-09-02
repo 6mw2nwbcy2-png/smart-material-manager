@@ -7,6 +7,7 @@ Production policy:
   metadata may change after save.
 - Saved material-use transactions (tx_type='투입') are immutable at PostgreSQL trigger level.
 """
+# Redeploy trigger: 2026-09-02 public access recovery. No application logic changed.
 from pathlib import Path
 
 SNAPSHOT = Path(__file__).with_name("app_snapshot.py")
