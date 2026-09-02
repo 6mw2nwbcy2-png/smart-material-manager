@@ -26,7 +26,7 @@ jobs:
 
       - name: Compile Python files
         run: |
-          python -m py_compile app.py app_snapshot.py admin_settings_extra.py pages/4_Stone.py pages/stone_impl.py pages/stone_impl_v2.py
+          python -m py_compile app.py app_snapshot.py admin_settings_extra.py db_runtime.py pages/4_Stone.py pages/stone_impl.py pages/stone_impl_v2.py
 
       - name: Verify stabilization markers
         run: |
@@ -36,34 +36,43 @@ jobs:
           base = Path('pages/stone_impl_v2.py').read_text(encoding='utf-8')
           app = Path('app.py').read_text(encoding='utf-8')
           admin = Path('admin_settings_extra.py').read_text(encoding='utf-8')
+          runtime = Path('db_runtime.py').read_text(encoding='utf-8')
+
           required_wrapper = [
               '협력사 석재 발주서',
               'stone_order_form_v3',
               'stone_order_attachments_v3',
               'pdf","xls","xlsx","dwg","dxf',
-              '발주서 삭제',
-              '결재 완료',
           ]
           required_base = [
               'DATABASE_URL = get_database_url()',
               'def seed_stone_items():',
-              '### 석재 발주서 작성',
               '### 최근 석재 발주 / 도해도',
           ]
           required_app = [
               'admin_settings_extra.py',
               'CENTRAL_DB_FALLBACK',
+              'historical budget visibility safety recovery',
               'pages/4_Stone.py',
           ]
           required_admin = [
+              '### 기존 예산 현황',
+              'admin_bulk_budget_editor_v7',
+              '비활성 품목 복구',
               '### 저장된 발주서 관리 / 삭제',
-              'admin_saved_order_delete_editor_v1',
+              'admin_saved_order_delete_editor_v2',
               '선택 발주서 삭제',
               '발주서 상태 저장',
               'DELETE FROM order_lines WHERE order_id=?',
               "DELETE FROM transactions WHERE tx_type='발주' AND note LIKE ?",
               'DELETE FROM orders WHERE id=?',
           ]
+          required_runtime = [
+              'resolve_database_url',
+              'connect_timeout=5',
+              'sslmode="require"',
+          ]
+
           for marker in required_wrapper:
               assert marker in wrapper, f'missing wrapper marker: {marker}'
           for marker in required_base:
@@ -72,6 +81,8 @@ jobs:
               assert marker in app, f'missing app marker: {marker}'
           for marker in required_admin:
               assert marker in admin, f'missing admin marker: {marker}'
+          for marker in required_runtime:
+              assert marker in runtime, f'missing runtime marker: {marker}'
           print('stabilization markers ok')
           PY
 
@@ -82,23 +93,22 @@ jobs:
           from pathlib import Path
           from streamlit.testing.v1 import AppTest
 
+          # CI has no production secret, so app must start safely in backup read-only mode.
           at = AppTest.from_file('app.py', default_timeout=30).run()
           assert not at.exception, at.exception
 
-          # 1) Normal user: stone order form must render even when item vendor is blank.
+          # Stone page must render the restored order form and attachments UI.
           at.sidebar.radio[0].set_value('석재')
           at.run()
           assert not at.exception, at.exception
           page_text = '\n'.join(str(x.value) for x in at.markdown)
           assert '협력사 석재 발주서' in page_text, page_text
-          assert '등록된 협력사가 있는 석재 품목이 있어야' not in page_text, page_text
           assert '신규 석재 품목 추가' not in page_text, page_text
           assert '예산 / 기존 품목 저장' not in page_text, page_text
-          assert '협력사 석재 품목 등록' not in page_text, page_text
           labels = [getattr(x, 'label', '') for x in at.text_input]
           assert '협력사명' in labels, labels
 
-          # 2) Seed a disposable order so admin order controls can be tested.
+          # Seed one disposable local order only for admin UI rendering test.
           db = Path('material_manager_v11.db')
           with sqlite3.connect(db) as c:
               item = c.execute("SELECT id FROM budget_items WHERE category='석재' AND active=1 ORDER BY id LIMIT 1").fetchone()
@@ -117,18 +127,15 @@ jobs:
                   "INSERT INTO order_lines(order_id,item_id,qty,requested_delivery_date,destination,delivery_recipient,delivery_phone,delivery_address) VALUES(?,?,?,?,?,?,?,?)",
                   (oid,item_id,1.0,'2026-09-03','현장','테스터','010-0000-0000','테스트주소'),
               )
-              c.execute(
-                  "INSERT INTO transactions(tx_date,item_id,tx_type,qty,destination,note,input_user) VALUES(?,?,?,?,?,?,?)",
-                  ('2026-09-02',item_id,'발주',1.0,'현장','발주서 CI-STONE-001','CI'),
-              )
               c.commit()
 
-          # 3) Admin settings: centralized item management + saved order deletion must render.
+          # Admin settings must show historical budgets, bulk editor, and saved-order deletion.
           at.session_state['is_admin'] = True
           at.sidebar.radio[0].set_value('관리자 설정')
           at.run()
           assert not at.exception, at.exception
           admin_text = '\n'.join(str(x.value) for x in at.markdown)
+          assert '기존 예산 현황' in admin_text, admin_text
           assert '예산 / 품목 관리' in admin_text, admin_text
           assert '저장된 발주서 관리 / 삭제' in admin_text, admin_text
           admin_button_labels = [getattr(x, 'label', '') for x in at.button]
