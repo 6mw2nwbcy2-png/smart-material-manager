@@ -1,0 +1,53 @@
+name: Data Protection Guard
+
+on:
+  push:
+    branches: [main, develop]
+  pull_request:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  guard:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Verify central-only write protection
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+
+          app = Path('app.py').read_text(encoding='utf-8')
+          stone = Path('pages/4_Stone.py').read_text(encoding='utf-8')
+
+          app_required = [
+              'CENTRAL_DB_FALLBACK = not USE_POSTGRES',
+              'if CENTRAL_DB_FALLBACK:',
+              '저장/수정/삭제를 차단했습니다',
+              'st.stop()',
+              '🔒 백업 DB 조회 전용',
+          ]
+          stone_required = [
+              'CENTRAL_DB_FALLBACK = not USE_POSTGRES',
+              'if not USE_POSTGRES:',
+              '석재 저장/수정/삭제를 차단했습니다',
+              'st.stop()',
+          ]
+
+          for marker in app_required:
+              assert marker in app, f'app.py data guard missing: {marker}'
+          for marker in stone_required:
+              assert marker in stone, f'pages/4_Stone.py data guard missing: {marker}'
+
+          # Never allow a production fallback that writes to local SQLite.
+          forbidden = [
+              'CENTRAL_DB_FALLBACK = True\n    def execute(sql, params=()):\n        with sqlite3.connect',
+              '중앙 DB 미연결 · 로컬 저장 가능',
+          ]
+          for marker in forbidden:
+              assert marker not in app, f'unsafe local-write fallback found: {marker}'
+
+          print('central-only write protection is locked')
+          PY
