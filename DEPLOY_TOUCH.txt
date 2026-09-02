@@ -1,2 +1,3 @@
 Clean deployment trigger 2026-09-02. Central PostgreSQL connection lifecycle fixed, Supabase direct/pooler recovery broadened, overview delivery schedule/storage/budget-vs-received UI restored, stone/admin ordering safeguards enabled.
 Public access was restored in Streamlit settings by the owner on 2026-09-02 19:44 KST; this commit forces a clean redeploy after that visibility change.
+Second clean redeploy after access setting recheck on 2026-09-02 19:54 KST. No application logic changed.
