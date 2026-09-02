@@ -43,6 +43,8 @@ jobs:
               'stone_order_form_v3',
               'stone_order_attachments_v3',
               'pdf","xls","xlsx","dwg","dxf',
+              'resolve_database_url',
+              '조회 전용',
           ]
           required_base = [
               'DATABASE_URL = get_database_url()',
@@ -69,8 +71,10 @@ jobs:
           ]
           required_runtime = [
               'resolve_database_url',
-              'connect_timeout=5',
-              'sslmode="require"',
+              '_supabase_pooler_candidates',
+              'connect_timeout=4',
+              'pooler.supabase.com',
+              'sslmode',
           ]
 
           for marker in required_wrapper:
@@ -93,11 +97,36 @@ jobs:
           from pathlib import Path
           from streamlit.testing.v1 import AppTest
 
-          # CI has no production secret, so app must start safely in backup read-only mode.
+          # CI has no production secret. The app must still render safely without writes.
           at = AppTest.from_file('app.py', default_timeout=30).run()
           assert not at.exception, at.exception
 
-          # Stone page must render the restored order form and attachments UI.
+          db = Path('material_manager_v11.db')
+          with sqlite3.connect(db) as c:
+              # Provide one local stone row ONLY for non-production rendering tests.
+              item = c.execute("SELECT id FROM budget_items WHERE category='석재' AND active=1 ORDER BY id LIMIT 1").fetchone()
+              if not item:
+                  cur = c.execute(
+                      """INSERT INTO budget_items(category,vendor,item_name,spec,unit,budget_qty,tile_type,application_type,default_destination,active)
+                         VALUES(?,?,?,?,?,?,?,?,?,1)""",
+                      ('석재','CI협력사','CI 석재','CI-001','M',10.0,'인조석','','현장'),
+                  )
+                  item_id = int(cur.lastrowid)
+              else:
+                  item_id = int(item[0])
+
+              c.execute("""CREATE TABLE IF NOT EXISTS order_attachments(
+                  id INTEGER PRIMARY KEY AUTOINCREMENT,
+                  order_id INTEGER NOT NULL,
+                  file_name TEXT NOT NULL,
+                  mime_type TEXT DEFAULT '',
+                  file_size INTEGER DEFAULT 0,
+                  file_data BLOB NOT NULL,
+                  created_at TEXT DEFAULT ''
+              )""")
+              c.commit()
+
+          # Stone page must render restored ordering and attachment inputs.
           at.sidebar.radio[0].set_value('석재')
           at.run()
           assert not at.exception, at.exception
@@ -107,13 +136,11 @@ jobs:
           assert '예산 / 기존 품목 저장' not in page_text, page_text
           labels = [getattr(x, 'label', '') for x in at.text_input]
           assert '협력사명' in labels, labels
+          uploader_labels = [getattr(x, 'label', '') for x in at.file_uploader]
+          assert '도해도 및 첨부파일 선택' in uploader_labels, uploader_labels
 
           # Seed one disposable local order only for admin UI rendering test.
-          db = Path('material_manager_v11.db')
           with sqlite3.connect(db) as c:
-              item = c.execute("SELECT id FROM budget_items WHERE category='석재' AND active=1 ORDER BY id LIMIT 1").fetchone()
-              assert item, 'no stone item after stone page bootstrap'
-              item_id = int(item[0])
               c.execute("DELETE FROM order_attachments WHERE order_id IN (SELECT id FROM orders WHERE order_no='CI-STONE-001')")
               c.execute("DELETE FROM order_lines WHERE order_id IN (SELECT id FROM orders WHERE order_no='CI-STONE-001')")
               c.execute("DELETE FROM transactions WHERE note LIKE '%CI-STONE-001%'")
@@ -129,7 +156,7 @@ jobs:
               )
               c.commit()
 
-          # Admin settings must show historical budgets, bulk editor, and saved-order deletion.
+          # Admin settings must show budgets, bulk editor, and saved-order deletion.
           at.session_state['is_admin'] = True
           at.sidebar.radio[0].set_value('관리자 설정')
           at.run()
