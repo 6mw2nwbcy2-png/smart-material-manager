@@ -8,9 +8,29 @@ SNAPSHOT = Path(__file__).with_name("app_snapshot.py")
 source = SNAPSHOT.read_text(encoding="utf-8")
 
 # 안정화 1단계: 중앙 DB 장애가 사이트 전체를 막지 않도록 백업 DB로 고정 실행.
+central_runtime = (
+    "DATABASE_URL = get_database_url()\n"
+    "USE_POSTGRES = bool(DATABASE_URL)\n"
+    "CENTRAL_DB_PREFERRED_V2 = True\n"
+    "CENTRAL_DB_FALLBACK = False\n"
+    "if USE_POSTGRES:\n"
+    "    _probe = None\n"
+    "    try:\n"
+    "        _probe = psycopg2.connect(DATABASE_URL, connect_timeout=7)\n"
+    "    except psycopg2.OperationalError:\n"
+    "        DATABASE_URL = ''\n"
+    "        USE_POSTGRES = False\n"
+    "        CENTRAL_DB_FALLBACK = True\n"
+    "    finally:\n"
+    "        if _probe is not None:\n"
+    "            try:\n"
+    "                _probe.close()\n"
+    "            except Exception:\n"
+    "                pass\n"
+)
 source = source.replace(
     "DATABASE_URL = get_database_url()\nUSE_POSTGRES = bool(DATABASE_URL)",
-    "DATABASE_URL = ''\nUSE_POSTGRES = False",
+    central_runtime,
     1,
 )
 
@@ -24,9 +44,14 @@ source = source.replace(
     'runpy.run_path("pages/4_Stone.py", run_name="__main__")',
 )
 
+db_caption = (
+    'st.caption("☁ 중앙 DB 연결 · 데이터 영구저장" if USE_POSTGRES else "🛡 중앙 DB 연결불가 · 백업 DB 임시모드")\n'
+    'if CENTRAL_DB_FALLBACK:\n'
+    '    st.warning("중앙 DB가 일시적으로 연결되지 않아 백업 DB로 접속 중입니다. 중앙 DB가 정상화되면 자동으로 다시 연결합니다.")'
+)
 source = source.replace(
     'st.caption("☁ 중앙 DB 연결" if USE_POSTGRES else "💻 로컬 SQLite 모드")',
-    'st.caption("🛡 안정화 모드 · 백업 DB")\nst.info("현재 사이트 안정화를 위해 백업 DB 모드로 운영 중입니다. 기존 기능은 유지하고 중앙 DB만 별도 복구합니다.")',
+    db_caption,
     1,
 )
 
