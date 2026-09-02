@@ -36,7 +36,7 @@ overview_anchor = '    st.info("일반 사용자는 자재 투입수량을 입�
 overview_extra = overview_anchor + '''\n\n    try:\n        _extra = Path("dashboard_extra.py")\n        exec(compile(_extra.read_text(encoding="utf-8"), str(_extra), "exec"), globals(), globals())\n    except Exception as _overview_error:\n        st.warning(f"담당자/업체별 현황을 표시하지 못했습니다: {_overview_error}")'''
 source = source.replace(overview_anchor, overview_extra, 1)
 
-# 관리자 설정: 예산/품목 일괄관리 + 저장된 발주서 상태/삭제.
+# 관리자 설정: 저장된 발주서 관리/삭제를 최상단에 배치 + 예산/품목 일괄관리.
 admin_marker = 'elif menu == "관리자 설정":'
 pos = source.find(admin_marker)
 if pos >= 0:
@@ -45,6 +45,71 @@ if pos >= 0:
     if not is_admin():
         st.warning("관리자 로그인 후 사용할 수 있습니다.")
     else:
+        # --------------------------------------------------
+        # 저장된 발주서 관리 / 삭제
+        # --------------------------------------------------
+        st.markdown("### 저장된 발주서 관리 / 삭제")
+        st.caption("저장된 발주서를 선택해 결재상태를 수정하거나 완전히 삭제할 수 있습니다.")
+
+        admin_orders = read("SELECT * FROM orders ORDER BY id DESC")
+        if not len(admin_orders):
+            st.info("저장된 발주서가 없습니다.")
+        else:
+            order_view = admin_orders[["order_no","category","vendor","order_date","partner_confirm","internal_approval","order_complete"]].copy()
+            order_view.columns = ["발주번호","공종","협력사","발주일","협력사확인","결재완료","발주완료"]
+            st.dataframe(order_view, use_container_width=True, hide_index=True)
+
+            order_options = {
+                f"{r.order_no} | {r.category} | {r.vendor} | {r.order_date}": int(r.id)
+                for _, r in admin_orders.iterrows()
+            }
+            selected_label = st.selectbox(
+                "관리할 발주서 선택",
+                list(order_options.keys()),
+                key="admin_saved_order_delete_editor_v1",
+            )
+            selected_id = order_options[selected_label]
+            selected = admin_orders[admin_orders["id"] == selected_id].iloc[0]
+
+            s1, s2, s3 = st.columns(3)
+            pc = s1.checkbox("협력사 확인", value=bool(selected.partner_confirm), key=f"adm_pc_selected_{selected_id}")
+            ia = s2.checkbox("결재 완료", value=bool(selected.internal_approval), key=f"adm_ia_selected_{selected_id}")
+            oc = s3.checkbox("발주 완료", value=bool(selected.order_complete), key=f"adm_oc_selected_{selected_id}")
+
+            c1, c2 = st.columns(2)
+            if c1.button("선택 발주서 상태 저장", type="primary", use_container_width=True, key=f"adm_selected_save_{selected_id}"):
+                execute(
+                    "UPDATE orders SET partner_confirm=?,internal_approval=?,order_complete=? WHERE id=?",
+                    (int(pc), int(ia), int(oc), selected_id),
+                )
+                st.success("발주서 상태 저장 완료")
+                st.rerun()
+
+            delete_confirm = st.checkbox(
+                "선택한 발주서를 정말 삭제합니다",
+                key=f"adm_selected_delete_confirm_{selected_id}",
+            )
+            if c2.button(
+                "선택 발주서 삭제",
+                use_container_width=True,
+                disabled=not delete_confirm,
+                key=f"adm_selected_delete_{selected_id}",
+            ):
+                order_no = str(selected.order_no)
+                try:
+                    execute("DELETE FROM order_attachments WHERE order_id=?", (selected_id,))
+                except Exception:
+                    pass
+                try:
+                    execute("DELETE FROM transactions WHERE tx_type='발주' AND note LIKE ?", (f"%{order_no}%",))
+                except Exception:
+                    pass
+                execute("DELETE FROM order_lines WHERE order_id=?", (selected_id,))
+                execute("DELETE FROM orders WHERE id=?", (selected_id,))
+                st.success(f"{order_no} 발주서 삭제 완료")
+                st.rerun()
+
+        st.markdown("---")
         st.markdown("### 예산 / 품목 관리")
         st.caption("철근·레미콘·타일·석재를 한 표에서 여러 행 추가/수정/삭제한 뒤 저장 버튼 한 번으로 반영합니다.")
 
@@ -70,10 +135,10 @@ if pos >= 0:
                 "application_type": st.column_config.TextColumn("적용구분"),
                 "default_destination": st.column_config.TextColumn("기본납품처"),
             },
-            key="admin_bulk_budget_editor_v5",
+            key="admin_bulk_budget_editor_v6",
         )
 
-        if st.button("예산 / 품목 전체 저장", type="primary", key="admin_bulk_save_v5"):
+        if st.button("예산 / 품목 전체 저장", type="primary", key="admin_bulk_save_v6"):
             current_ids = set(items["id"].astype(int).tolist()) if len(items) else set()
             edited_ids = set()
             seen = set()
@@ -148,52 +213,10 @@ if pos >= 0:
                 st.rerun()
 
         st.markdown("---")
-        st.markdown("### 저장된 발주서 관리 / 삭제")
-        st.caption("발주서 상태를 수정하거나 저장된 발주서를 삭제할 수 있습니다.")
-        admin_orders = read("SELECT * FROM orders ORDER BY id DESC")
-
-        if not len(admin_orders):
-            st.info("저장된 발주서가 없습니다.")
-        else:
-            for _, o in admin_orders.iterrows():
-                status = "발주완료" if int(o.order_complete or 0) else "결재완료" if int(o.internal_approval or 0) else "협력사 확인완료" if int(o.partner_confirm or 0) else "진행중"
-                with st.expander(f"{o.order_no} | {o.category} | {o.vendor} | {status}"):
-                    c1, c2, c3 = st.columns(3)
-                    pc = c1.checkbox("협력사 확인", value=bool(o.partner_confirm), key=f"adm_pc_{o.id}")
-                    ia = c2.checkbox("결재 완료", value=bool(o.internal_approval), key=f"adm_ia_{o.id}")
-                    oc = c3.checkbox("발주 완료", value=bool(o.order_complete), key=f"adm_oc_{o.id}")
-
-                    b1, b2 = st.columns(2)
-                    if b1.button("상태 저장", key=f"adm_order_save_{o.id}", type="primary"):
-                        execute(
-                            "UPDATE orders SET partner_confirm=?,internal_approval=?,order_complete=? WHERE id=?",
-                            (int(pc), int(ia), int(oc), int(o.id)),
-                        )
-                        st.success("발주서 상태 저장 완료")
-                        st.rerun()
-
-                    delete_ok = b2.checkbox("삭제 확인", key=f"adm_delete_confirm_{o.id}")
-                    if b2.button("발주서 삭제", key=f"adm_order_delete_{o.id}", disabled=not delete_ok):
-                        oid = int(o.id)
-                        order_no = str(o.order_no)
-                        try:
-                            execute("DELETE FROM order_attachments WHERE order_id=?", (oid,))
-                        except Exception:
-                            pass
-                        try:
-                            execute("DELETE FROM transactions WHERE tx_type='발주' AND note LIKE ?", (f"%{order_no}%",))
-                        except Exception:
-                            pass
-                        execute("DELETE FROM order_lines WHERE order_id=?", (oid,))
-                        execute("DELETE FROM orders WHERE id=?", (oid,))
-                        st.success(f"{order_no} 발주서 삭제 완료")
-                        st.rerun()
-
-        st.markdown("---")
         st.markdown("### 관리자 비밀번호 변경")
-        p1 = st.text_input("새 비밀번호", type="password", key="admin_pw1_v5")
-        p2 = st.text_input("새 비밀번호 확인", type="password", key="admin_pw2_v5")
-        if st.button("비밀번호 변경", key="admin_pw_change_v5"):
+        p1 = st.text_input("새 비밀번호", type="password", key="admin_pw1_v6")
+        p2 = st.text_input("새 비밀번호 확인", type="password", key="admin_pw2_v6")
+        if st.button("비밀번호 변경", key="admin_pw_change_v6"):
             if len(p1) < 4:
                 st.warning("4자리 이상 입력하세요.")
             elif p1 != p2:
