@@ -8,10 +8,10 @@ from pathlib import Path
 SNAPSHOT = Path(__file__).with_name("app_snapshot.py")
 source = SNAPSHOT.read_text(encoding="utf-8")
 
-# 중앙 DB 우선 + 연결 실패 시에만 백업 DB 자동 전환.
+# 중앙 DB 우선 + 일시 장애는 5회 재시도 후에만 백업 DB로 전환.
 source = source.replace(
     "DATABASE_URL = get_database_url()\nUSE_POSTGRES = bool(DATABASE_URL)",
-    '''DATABASE_URL = get_database_url()\nUSE_POSTGRES = bool(DATABASE_URL)\nCENTRAL_DB_FALLBACK = False\n\nif USE_POSTGRES:\n    _probe = None\n    try:\n        _probe = psycopg2.connect(DATABASE_URL, connect_timeout=5)\n    except Exception:\n        USE_POSTGRES = False\n        CENTRAL_DB_FALLBACK = True\n    finally:\n        if _probe is not None:\n            try:\n                _probe.close()\n            except Exception:\n                pass''',
+    '''DATABASE_URL = get_database_url()\nUSE_POSTGRES = bool(DATABASE_URL)\nCENTRAL_DB_FALLBACK = False\nCENTRAL_DB_ERROR = ""\n\nif USE_POSTGRES:\n    import time as _db_time\n    _connected = False\n    for _attempt in range(5):\n        _probe = None\n        try:\n            _probe = psycopg2.connect(DATABASE_URL, connect_timeout=8)\n            _connected = True\n            break\n        except Exception as _db_exc:\n            CENTRAL_DB_ERROR = str(_db_exc)\n            if _attempt < 4:\n                _db_time.sleep(1)\n        finally:\n            if _probe is not None:\n                try:\n                    _probe.close()\n                except Exception:\n                    pass\n    if not _connected:\n        USE_POSTGRES = False\n        CENTRAL_DB_FALLBACK = True''',
     1,
 )
 
@@ -27,7 +27,7 @@ source = source.replace(
 
 source = source.replace(
     'st.caption("☁ 중앙 DB 연결" if USE_POSTGRES else "💻 로컬 SQLite 모드")',
-    '''st.caption("☁ 중앙 DB 연결" if USE_POSTGRES else "🛟 백업 DB 모드")\nif CENTRAL_DB_FALLBACK:\n    st.warning("중앙 DB 연결이 일시적으로 불가하여 백업 DB로 표시 중입니다. 중앙 DB가 정상화되면 기존 예산/발주 내역이 다시 표시됩니다.")''',
+    '''st.caption("☁ 중앙 DB 연결" if USE_POSTGRES else "🛟 백업 DB 모드")\nif CENTRAL_DB_FALLBACK:\n    st.warning("중앙 DB 연결을 5회 시도했지만 연결되지 않아 백업 DB로 표시 중입니다. 중앙 DB가 정상화되면 자동으로 다시 중앙 DB를 사용합니다.")''',
     1,
 )
 
@@ -37,7 +37,6 @@ overview_extra = overview_anchor + '''\n\n    try:\n        _extra = Path("dashb
 source = source.replace(overview_anchor, overview_extra, 1)
 
 # 관리자 설정은 별도 안정화 모듈에서 관리.
-# 예산/품목 일괄편집 + 저장된 발주서 상태변경/선택삭제 기능 포함.
 admin_marker = 'elif menu == "관리자 설정":'
 pos = source.find(admin_marker)
 if pos >= 0:
