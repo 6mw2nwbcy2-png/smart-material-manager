@@ -7,11 +7,21 @@ if not is_admin():
     st.warning("관리자 로그인 후 사용할 수 있습니다.")
 else:
     st.markdown("### 예산 / 품목 관리")
-    st.caption("철근·레미콘·타일·석재를 한 표에서 여러 행 추가/수정/삭제한 뒤 저장 버튼 한 번으로 반영합니다.")
+    st.caption("철근·레미콘·타일·석재를 한 표에서 여러 행 추가/수정할 수 있습니다. 삭제는 반드시 '삭제' 체크 후 저장해야 반영됩니다.")
 
-    items = read("SELECT * FROM budget_items WHERE active=1 ORDER BY category,vendor,spec,item_name")
+    # 안전장치: 과거 일괄 저장 로직 때문에 모든 품목이 비활성화된 경우 자동 복구.
+    _all_items = read("SELECT * FROM budget_items ORDER BY category,vendor,spec,item_name")
+    _active_items = _all_items[_all_items["active"] == 1].copy() if len(_all_items) else _all_items.copy()
+    if len(_all_items) and not len(_active_items):
+        execute("UPDATE budget_items SET active=1")
+        st.warning("이전 저장 과정에서 비활성화된 예산/품목을 자동 복구했습니다.")
+        _all_items = read("SELECT * FROM budget_items ORDER BY category,vendor,spec,item_name")
+        _active_items = _all_items[_all_items["active"] == 1].copy()
+
+    items = _active_items
     edit_cols = ["id","category","vendor","item_name","spec","unit","budget_qty","tile_type","application_type","default_destination"]
     base = items[edit_cols].copy() if len(items) else pd.DataFrame(columns=edit_cols)
+    base["삭제"] = False
 
     edited = st.data_editor(
         base,
@@ -30,17 +40,24 @@ else:
             "tile_type": st.column_config.TextColumn("타일/석재구분"),
             "application_type": st.column_config.TextColumn("적용구분"),
             "default_destination": st.column_config.TextColumn("기본납품처"),
+            "삭제": st.column_config.CheckboxColumn("삭제", help="정말 삭제할 품목만 체크하세요."),
         },
-        key="admin_bulk_budget_editor_v6",
+        key="admin_bulk_budget_editor_v7",
     )
 
-    if st.button("예산 / 품목 전체 저장", type="primary", key="admin_bulk_save_v6"):
-        current_ids = set(items["id"].astype(int).tolist()) if len(items) else set()
-        edited_ids = set()
+    if st.button("예산 / 품목 전체 저장", type="primary", key="admin_bulk_save_v7"):
         seen = set()
         errors = []
+        delete_ids = []
+        save_rows = []
 
         for idx, r in edited.iterrows():
+            rid = r.get("id")
+            if bool(r.get("삭제", False)):
+                if pd.notna(rid):
+                    delete_ids.append(int(rid))
+                continue
+
             category = str(r.get("category", "") or "").strip()
             item_name = str(r.get("item_name", "") or "").strip()
             spec = str(r.get("spec", "") or "").strip()
@@ -71,42 +88,67 @@ else:
                 if not default_destination:
                     default_destination = "현장"
 
-            rid = r.get("id")
-            if pd.notna(rid):
-                rid = int(rid)
-                edited_ids.add(rid)
-                execute(
-                    """UPDATE budget_items
-                       SET category=?,vendor=?,item_name=?,spec=?,unit=?,budget_qty=?,
-                           tile_type=?,application_type=?,default_destination=?,active=1
-                       WHERE id=?""",
-                    (category,vendor,item_name,spec,unit,budget_qty,tile_type,
-                     application_type,default_destination,rid),
-                )
-            else:
-                dup = read(
-                    "SELECT id FROM budget_items WHERE category=? AND item_name=? AND spec=? AND active=1",
-                    (category,item_name,spec),
-                )
-                if len(dup):
-                    errors.append(f"{idx+1}행: 이미 등록된 품목입니다.")
-                    continue
-                execute(
-                    """INSERT INTO budget_items(
-                       category,vendor,item_name,spec,unit,budget_qty,
-                       tile_type,application_type,default_destination,active)
-                       VALUES(?,?,?,?,?,?,?,?,?,1)""",
-                    (category,vendor,item_name,spec,unit,budget_qty,tile_type,
-                     application_type,default_destination),
-                )
+            save_rows.append((rid, category, vendor, item_name, spec, unit, budget_qty, tile_type, application_type, default_destination))
 
         if errors:
             st.error("저장하지 못한 행이 있습니다: " + " / ".join(errors))
         else:
-            for rid in current_ids - edited_ids:
+            for row in save_rows:
+                rid, category, vendor, item_name, spec, unit, budget_qty, tile_type, application_type, default_destination = row
+                if pd.notna(rid):
+                    execute(
+                        """UPDATE budget_items
+                           SET category=?,vendor=?,item_name=?,spec=?,unit=?,budget_qty=?,
+                               tile_type=?,application_type=?,default_destination=?,active=1
+                           WHERE id=?""",
+                        (category,vendor,item_name,spec,unit,budget_qty,tile_type,
+                         application_type,default_destination,int(rid)),
+                    )
+                else:
+                    dup = read(
+                        "SELECT id FROM budget_items WHERE category=? AND item_name=? AND spec=? AND active=1",
+                        (category,item_name,spec),
+                    )
+                    if len(dup):
+                        continue
+                    execute(
+                        """INSERT INTO budget_items(
+                           category,vendor,item_name,spec,unit,budget_qty,
+                           tile_type,application_type,default_destination,active)
+                           VALUES(?,?,?,?,?,?,?,?,?,1)""",
+                        (category,vendor,item_name,spec,unit,budget_qty,tile_type,
+                         application_type,default_destination),
+                    )
+
+            # 삭제는 명시적으로 체크된 기존 품목에만 적용. 표에서 행이 사라졌다는 이유로 자동 삭제하지 않음.
+            for rid in delete_ids:
                 execute("UPDATE budget_items SET active=0 WHERE id=?", (rid,))
-            st.success("예산 / 품목 전체 저장 완료")
+
+            msg = "예산 / 품목 저장 완료"
+            if delete_ids:
+                msg += f" · 삭제 {len(delete_ids)}건"
+            st.success(msg)
             st.rerun()
+
+    inactive = read("SELECT id,category,vendor,item_name,spec,unit,budget_qty FROM budget_items WHERE active=0 ORDER BY category,vendor,spec,item_name")
+    if len(inactive):
+        with st.expander(f"비활성 품목 복구 ({len(inactive)}건)"):
+            restore = inactive.copy()
+            restore["복구"] = False
+            restore_edit = st.data_editor(
+                restore,
+                use_container_width=True,
+                hide_index=True,
+                disabled=["id","category","vendor","item_name","spec","unit","budget_qty"],
+                column_config={"id": None, "복구": st.column_config.CheckboxColumn("복구")},
+                key="admin_restore_inactive_v1",
+            )
+            restore_ids = restore_edit.loc[restore_edit["복구"] == True, "id"].tolist()
+            if st.button("선택 품목 복구", disabled=not len(restore_ids), key="admin_restore_inactive_btn_v1"):
+                for rid in restore_ids:
+                    execute("UPDATE budget_items SET active=1 WHERE id=?", (int(rid),))
+                st.success(f"{len(restore_ids)}개 품목 복구 완료")
+                st.rerun()
 
     st.markdown("---")
     st.markdown("### 저장된 발주서 관리 / 삭제")
@@ -140,11 +182,11 @@ else:
                 "발주 완료": st.column_config.CheckboxColumn("발주 완료"),
                 "삭제 선택": st.column_config.CheckboxColumn("삭제 선택"),
             },
-            key="admin_saved_order_delete_editor_v1",
+            key="admin_saved_order_delete_editor_v2",
         )
 
         c1, c2 = st.columns(2)
-        if c1.button("발주서 상태 저장", type="primary", key="admin_saved_order_status_save_v1"):
+        if c1.button("발주서 상태 저장", type="primary", key="admin_saved_order_status_save_v2"):
             for _, r in order_result.iterrows():
                 execute(
                     "UPDATE orders SET partner_confirm=?,internal_approval=?,order_complete=? WHERE id=?",
@@ -161,11 +203,11 @@ else:
         selected_delete = order_result[order_result["삭제 선택"] == True].copy()
         delete_confirm = c2.checkbox(
             f"선택한 {len(selected_delete)}건 삭제 확인",
-            key="admin_saved_order_delete_confirm_v1",
+            key="admin_saved_order_delete_confirm_v2",
         )
         if c2.button(
             "선택 발주서 삭제",
-            key="admin_saved_order_delete_v1",
+            key="admin_saved_order_delete_v2",
             disabled=(not delete_confirm or not len(selected_delete)),
         ):
             deleted = 0
@@ -191,9 +233,9 @@ else:
 
     st.markdown("---")
     st.markdown("### 관리자 비밀번호 변경")
-    p1 = st.text_input("새 비밀번호", type="password", key="admin_pw1_v6")
-    p2 = st.text_input("새 비밀번호 확인", type="password", key="admin_pw2_v6")
-    if st.button("비밀번호 변경", key="admin_pw_change_v6"):
+    p1 = st.text_input("새 비밀번호", type="password", key="admin_pw1_v7")
+    p2 = st.text_input("새 비밀번호 확인", type="password", key="admin_pw2_v7")
+    if st.button("비밀번호 변경", key="admin_pw_change_v7"):
         if len(p1) < 4:
             st.warning("4자리 이상 입력하세요.")
         elif p1 != p2:
