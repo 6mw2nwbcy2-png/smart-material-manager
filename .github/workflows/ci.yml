@@ -28,13 +28,13 @@ jobs:
 
       - name: Compile Python files
         run: |
-          python -m py_compile app.py app_snapshot.py pages/4_Stone.py pages/stone_impl.py pages/stone_impl_v2.py
+          python -m py_compile app.py app_snapshot.py pages/admin_settings.py pages/4_Stone.py pages/stone_impl.py pages/stone_impl_v2.py
 
       - name: Data safety guard
         run: |
           python - <<'PY'
           from pathlib import Path
-          files = [Path('app.py'), Path('pages/4_Stone.py')]
+          files = [Path('app.py'), Path('pages/admin_settings.py'), Path('pages/4_Stone.py')]
           forbidden = [
               'DROP TABLE',
               'TRUNCATE TABLE',
@@ -55,18 +55,25 @@ jobs:
           python - <<'PY'
           from pathlib import Path
           app = Path('app.py').read_text(encoding='utf-8')
+          admin = Path('pages/admin_settings.py').read_text(encoding='utf-8')
           stone = Path('pages/4_Stone.py').read_text(encoding='utf-8')
           for marker in [
               'CI_LOCAL_DB',
-              'db_connect',
+              'ThreadedConnectionPool',
               '중앙 DB 연결 · 데이터 영구저장',
               'deleted_at',
               'data_change_log',
+              'pages/admin_settings.py',
+          ]:
+              assert marker in app, f'missing app marker: {marker}'
+          for marker in [
               '발주서 관리',
               '삭제 발주서 복구',
               '발주서 삭제(보관)',
+              'SOFT_DELETE',
+              'def _atomic',
           ]:
-              assert marker in app, f'missing app marker: {marker}'
+              assert marker in admin, f'missing admin marker: {marker}'
           for marker in [
               '협력사 석재 발주서',
               'stone_order_form_v4',
